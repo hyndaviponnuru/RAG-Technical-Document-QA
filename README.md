@@ -1,4 +1,4 @@
-%%writefile RAG-Technical-Document-QA/README.md
+
 
 # RAG Technical Document QA Assistant
 
