@@ -1,4 +1,4 @@
-%%writefile RAG-Technical-Document-QA/requirements.txt
+
 
 streamlit
 chromadb
