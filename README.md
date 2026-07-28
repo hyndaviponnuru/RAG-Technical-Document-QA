@@ -1,46 +1,36 @@
-# Technical Document QA Assistant using RAG
+%%writefile RAG-Technical-Document-QA/README.md
 
-## Project Overview
+# RAG Technical Document QA Assistant
 
-This project implements a Retrieval-Augmented Generation (RAG) based question-answering system for technical documents.
-
-Users can ask questions about technical research papers, and the system retrieves relevant document chunks and generates answers grounded in the retrieved information.
+A Retrieval-Augmented Generation system for question answering over technical research documents.
 
 ## Architecture
 
 PDF Documents
-↓
-Text Extraction
-↓
-Document Chunking
-↓
-Sentence Transformer Embeddings
-↓
-ChromaDB Vector Database
-↓
-Semantic Retrieval
-↓
-Qwen2.5-1.5B-Instruct
-↓
-Answer Generation
-↓
-Source and Page Citations
+→ Text Extraction
+→ Chunking
+→ Sentence Transformer Embeddings
+→ ChromaDB Vector Database
+→ Semantic Retrieval
+→ Qwen2.5-1.5B-Instruct
+→ Answer Generation
+→ Source Citations
 
 ## Technologies
 
 - Python
+- Streamlit
+- LangChain
 - PyPDF
 - Sentence Transformers
 - ChromaDB
 - Qwen2.5-1.5B-Instruct
 - Hugging Face Transformers
-- Streamlit
 
 ## Features
 
-- Technical PDF document ingestion
-- Semantic document retrieval
+- Upload and process technical PDF documents
+- Semantic search using vector embeddings
 - Retrieval-Augmented Generation
 - Context-grounded answers
-- Source document identification
-- Page-level source references
+- Source document and page references
