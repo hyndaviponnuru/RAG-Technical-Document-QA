@@ -1,16 +1,19 @@
+%%writefile app.py
+
 import os
 import streamlit as st
 import chromadb
+import torch
 
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
-# ==========================================
-# STREAMLIT PAGE CONFIG
-# ==========================================
+# ============================================================
+# 1. STREAMLIT CONFIGURATION
+# ============================================================
 
 st.set_page_config(
     page_title="Technical Document QA Assistant",
@@ -19,21 +22,115 @@ st.set_page_config(
 )
 
 
-# ==========================================
-# TITLE
-# ==========================================
+# ============================================================
+# 2. TITLE
+# ============================================================
 
 st.title("📚 Technical Document QA Assistant")
 
 st.write(
-    "Ask questions about technical documents "
+    "Ask questions about technical research documents "
     "using Retrieval-Augmented Generation (RAG)."
 )
 
 
-# ==========================================
-# LOAD EMBEDDING MODEL
-# ==========================================
+# ============================================================
+# 3. DOCUMENT PATH
+# ============================================================
+
+PDF_FOLDER = "documents"
+
+
+# ============================================================
+# 4. LOAD PDF DOCUMENTS
+# ============================================================
+
+@st.cache_data
+def load_documents():
+
+    all_documents = []
+
+    for filename in os.listdir(PDF_FOLDER):
+
+        if filename.endswith(".pdf"):
+
+            file_path = os.path.join(
+                PDF_FOLDER,
+                filename
+            )
+
+            reader = PdfReader(file_path)
+
+            for page_number, page in enumerate(
+                reader.pages
+            ):
+
+                text = page.extract_text()
+
+                if text:
+
+                    all_documents.append({
+
+                        "text": text,
+
+                        "source": filename,
+
+                        "page": page_number
+
+                    })
+
+    return all_documents
+
+
+all_documents = load_documents()
+
+
+# ============================================================
+# 5. CHUNK DOCUMENTS
+# ============================================================
+
+@st.cache_data
+def create_chunks(documents):
+
+    text_splitter = RecursiveCharacterTextSplitter(
+
+        chunk_size=800,
+
+        chunk_overlap=100
+
+    )
+
+    chunks = []
+
+    for doc in documents:
+
+        split_texts = text_splitter.split_text(
+            doc["text"]
+        )
+
+        for text in split_texts:
+
+            chunks.append({
+
+                "text": text,
+
+                "source": doc["source"],
+
+                "page": doc["page"]
+
+            })
+
+    return chunks
+
+
+chunks = create_chunks(
+    all_documents
+)
+
+
+# ============================================================
+# 6. LOAD EMBEDDING MODEL
+# ============================================================
 
 @st.cache_resource
 def load_embedding_model():
@@ -46,164 +143,64 @@ def load_embedding_model():
 embedding_model = load_embedding_model()
 
 
-# ==========================================
-# LOAD QWEN MODEL
-# ==========================================
+# ============================================================
+# 7. CREATE CHROMADB
+# ============================================================
 
 @st.cache_resource
-def load_llm():
-
-    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name
-    )
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name
-    )
-
-    return tokenizer, model
-
-
-tokenizer, model = load_llm()
-
-
-# ==========================================
-# DOCUMENT PATH
-# ==========================================
-
-DOCUMENT_PATH = "documents"
-
-
-# ==========================================
-# LOAD PDF DOCUMENTS
-# ==========================================
-
-@st.cache_data
-def load_documents():
-
-    documents = []
-
-    for filename in os.listdir(
-        DOCUMENT_PATH
-    ):
-
-        if filename.endswith(".pdf"):
-
-            filepath = os.path.join(
-                DOCUMENT_PATH,
-                filename
-            )
-
-            reader = PdfReader(
-                filepath
-            )
-
-            for page_number, page in enumerate(
-                reader.pages
-            ):
-
-                text = page.extract_text()
-
-                if text:
-
-                    documents.append({
-
-                        "text": text,
-
-                        "source": filename,
-
-                        "page": page_number
-
-                    })
-
-    return documents
-
-
-documents = load_documents()
-
-
-# ==========================================
-# CREATE CHUNKS
-# ==========================================
-
-def create_chunks(
-    documents,
-    chunk_size=500
-):
-
-    chunks = []
-
-    for doc in documents:
-
-        text = doc["text"]
-
-        for i in range(
-            0,
-            len(text),
-            chunk_size
-        ):
-
-            chunk_text = text[
-                i:i + chunk_size
-            ]
-
-            chunks.append({
-
-                "text": chunk_text,
-
-                "source": doc["source"],
-
-                "page": doc["page"]
-
-            })
-
-    return chunks
-
-
-chunks = create_chunks(
-    documents
-)
-
-
-# ==========================================
-# CREATE CHROMADB
-# ==========================================
-
-@st.cache_resource
-def create_vector_database():
+def create_collection():
 
     client = chromadb.Client()
 
     collection = client.get_or_create_collection(
+
         name="technical_documents"
+
     )
+
+    # Add documents only once
 
     if collection.count() == 0:
 
-        texts = [
+        chunk_texts = [
+
             chunk["text"]
+
             for chunk in chunks
+
         ]
 
-        embeddings = embedding_model.encode(
-            texts
-        ).tolist()
+        chunk_embeddings = (
 
-        ids = [
+            embedding_model.encode(
+
+                chunk_texts,
+
+                show_progress_bar=True
+
+            )
+
+        )
+
+        chunk_ids = [
+
             f"chunk_{i}"
+
             for i in range(
                 len(chunks)
             )
+
         ]
 
         metadatas = [
 
             {
-                "source": chunk["source"],
 
-                "page": chunk["page"]
+                "source":
+                chunk["source"],
+
+                "page":
+                chunk["page"]
 
             }
 
@@ -213,11 +210,12 @@ def create_vector_database():
 
         collection.add(
 
-            ids=ids,
+            ids=chunk_ids,
 
-            documents=texts,
+            documents=chunk_texts,
 
-            embeddings=embeddings,
+            embeddings=
+            chunk_embeddings.tolist(),
 
             metadatas=metadatas
 
@@ -226,28 +224,31 @@ def create_vector_database():
     return collection
 
 
-collection = create_vector_database()
+collection = create_collection()
 
 
-# ==========================================
-# RETRIEVAL FUNCTION
-# ==========================================
+# ============================================================
+# 8. RETRIEVAL FUNCTION
+# ============================================================
 
 def retrieve_documents(
-    question,
+    query,
     top_k=3
 ):
 
-    question_embedding = (
+    query_embedding = (
+
         embedding_model.encode(
-            [question]
-        ).tolist()
+            query
+        )
+
     )
 
     results = collection.query(
 
-        query_embeddings=
-        question_embedding,
+        query_embeddings=[
+            query_embedding.tolist()
+        ],
 
         n_results=top_k
 
@@ -256,38 +257,106 @@ def retrieve_documents(
     return results
 
 
-# ==========================================
-# RAG ANSWER FUNCTION
-# ==========================================
+# ============================================================
+# 9. LOAD QWEN MODEL
+# ============================================================
 
-def rag_answer(
-    question
-):
+@st.cache_resource
+def load_llm():
 
-    results = retrieve_documents(
-        question,
-        top_k=3
+    model_name = (
+        "Qwen/Qwen2.5-1.5B-Instruct"
     )
 
-    context = "\n\n".join(
+    tokenizer = (
+        AutoTokenizer.from_pretrained(
+            model_name
+        )
+    )
 
-        results["documents"][0]
+    model = (
+        AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=(
+                torch.float16
+                if torch.cuda.is_available()
+                else torch.float32
+            )
+        )
+    )
 
+    if torch.cuda.is_available():
+
+        model = model.to("cuda")
+
+    return tokenizer, model
+
+
+tokenizer, model = load_llm()
+
+
+# ============================================================
+# 10. BUILD CONTEXT
+# ============================================================
+
+def build_context(results):
+
+    context_parts = []
+
+    for text in results["documents"][0]:
+
+        context_parts.append(text)
+
+    return "\n\n".join(
+        context_parts
+    )
+
+
+# ============================================================
+# 11. RAG ANSWER FUNCTION
+# ============================================================
+
+def rag_answer(
+    question,
+    top_k=3
+):
+
+    # Retrieve relevant documents
+
+    results = retrieve_documents(
+
+        question,
+
+        top_k=top_k
+
+    )
+
+
+    # Build context
+
+    context = build_context(
+        results
     )
 
     context = context[:6000]
 
 
+    # Prompt
+
     messages = [
 
         {
+
             "role": "system",
 
             "content": """
 You are a technical document
 question-answering assistant.
 
-Answer ONLY using the provided context.
+Answer the user's question using
+ONLY the provided context.
+
+Do not use outside knowledge.
 
 If the answer is not available
 in the context, say:
@@ -295,8 +364,10 @@ in the context, say:
 I could not find the answer
 in the provided documents.
 
-Give a clear and concise answer.
+Give a clear and concise answer
+in 2 to 4 sentences.
 """
+
         },
 
         {
@@ -318,6 +389,8 @@ Question:
     ]
 
 
+    # Create prompt
+
     text = tokenizer.apply_chat_template(
 
         messages,
@@ -328,6 +401,8 @@ Question:
 
     )
 
+
+    # Tokenize
 
     inputs = tokenizer(
 
@@ -342,6 +417,13 @@ Question:
     )
 
 
+    if torch.cuda.is_available():
+
+        inputs = inputs.to("cuda")
+
+
+    # Generate
+
     with torch.no_grad():
 
         outputs = model.generate(
@@ -354,6 +436,8 @@ Question:
 
         )
 
+
+    # Extract answer
 
     generated_tokens = outputs[0][
 
@@ -374,9 +458,9 @@ Question:
     return answer, results
 
 
-# ==========================================
-# STREAMLIT USER INTERFACE
-# ==========================================
+# ============================================================
+# 12. STREAMLIT USER INTERFACE
+# ============================================================
 
 question = st.text_input(
 
@@ -393,13 +477,21 @@ if st.button("🔍 Ask Question"):
     if question.strip():
 
         with st.spinner(
+
             "Searching documents and generating answer..."
+
         ):
 
             answer, results = rag_answer(
-                question
+
+                question,
+
+                top_k=3
+
             )
 
+
+        # Answer
 
         st.subheader(
             "Answer"
@@ -410,6 +502,8 @@ if st.button("🔍 Ask Question"):
         )
 
 
+        # Sources
+
         st.subheader(
             "Sources"
         )
@@ -418,7 +512,13 @@ if st.button("🔍 Ask Question"):
         shown_sources = set()
 
 
-        for i in range(3):
+        for i in range(
+
+            len(
+                results["documents"][0]
+            )
+
+        ):
 
             source = results[
                 "metadatas"
@@ -443,16 +543,20 @@ if st.button("🔍 Ask Question"):
 
                 st.write(
 
-                    f"📄 {source} — Page {page}"
+                    f"📄 {source} | Page {page}"
 
                 )
 
                 shown_sources.add(
+
                     citation
+
                 )
 
     else:
 
         st.warning(
+
             "Please enter a question."
+
         )
