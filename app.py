@@ -3,8 +3,7 @@ import hashlib
 
 import streamlit as st
 import chromadb
-
-from pypdf import PdfReader
+import fitz
 
 from sentence_transformers import (
     SentenceTransformer,
@@ -394,114 +393,76 @@ uploaded_file = (
 # ============================================================
 # 13. PROCESS UPLOADED PDF
 # ============================================================
+def process_pdf(pdf_path, source_name):
 
-if uploaded_file is not None:
+    documents = []
 
-    st.sidebar.write(
-        f"Selected: {uploaded_file.name}"
-    )
+    try:
 
+        # Open PDF using PyMuPDF
+        pdf_document = fitz.open(pdf_path)
 
-    if st.sidebar.button(
-        "➕ Add PDF to Knowledge Base"
-    ):
-
-        with st.spinner(
-            "Processing uploaded PDF..."
+        for page_number in range(
+            len(pdf_document)
         ):
 
-            # Save uploaded file
-
-            uploaded_path = os.path.join(
-
-                PDF_FOLDER,
-
-                uploaded_file.name
-
+            page = pdf_document.load_page(
+                page_number
             )
 
-
-            with open(
-                uploaded_path,
-                "wb"
-            ) as f:
-
-                f.write(
-                    uploaded_file.getbuffer()
-                )
-
-
-            # Process PDF
-
-            new_chunks = process_pdf(
-
-                uploaded_path,
-
-                uploaded_file.name
-
+            # Extract text
+            text = page.get_text(
+                "text"
             )
 
+            if text and text.strip():
 
-            if new_chunks:
-
-                try:
-
-                    # Add chunks to ChromaDB
-
-                    added_count = (
-                        add_chunks_to_database(
-                            new_chunks
-                        )
-                    )
-
-
-                    st.sidebar.success(
-
-                        f"Successfully added "
-                        f"{added_count} chunks."
-
-                    )
-
-
-                    st.success(
-
-                        f"📄 {uploaded_file.name} "
-                        f"has been added to the "
-                        f"knowledge base."
-
-                    )
-
-
-                    st.info(
-
-                        "You can now ask questions "
-                        "about this document."
-
-                    )
-
-
-                except Exception as e:
-
-                    st.sidebar.error(
-
-                        "Failed to add document "
-                        "to ChromaDB."
-
-                    )
-
-                    st.exception(
-                        e
-                    )
-
-            else:
-
-                st.sidebar.error(
-
-                    "No readable text was found "
-                    "in this PDF."
-
+                documents.append(
+                    {
+                        "text": text.strip(),
+                        "source": source_name,
+                        "page": page_number + 1
+                    }
                 )
 
+        pdf_document.close()
+
+    except Exception as e:
+
+        st.error(
+            f"Error reading {source_name}: {e}"
+        )
+
+        return []
+
+
+    # ========================================================
+    # CREATE CHUNKS
+    # ========================================================
+
+    chunks = []
+
+    for document in documents:
+
+        split_texts = (
+            text_splitter.split_text(
+                document["text"]
+            )
+        )
+
+        for text in split_texts:
+
+            if text.strip():
+
+                chunks.append(
+                    {
+                        "text": text.strip(),
+                        "source": document["source"],
+                        "page": document["page"]
+                    }
+                )
+
+    return chunks
 
 # ============================================================
 # 14. DISPLAY DATABASE STATUS
