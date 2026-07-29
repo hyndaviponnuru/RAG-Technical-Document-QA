@@ -1,15 +1,18 @@
 import os
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
-
-import os
 import streamlit as st
 import chromadb
 import torch
 
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM
+)
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter
+)
 
 
 # ============================================================
@@ -27,7 +30,9 @@ st.set_page_config(
 # 2. TITLE
 # ============================================================
 
-st.title("📚 Technical Document QA Assistant")
+st.title(
+    "📚 Technical Document QA Assistant"
+)
 
 st.write(
     "Ask questions about technical research documents "
@@ -39,7 +44,9 @@ st.write(
 # 3. PATH CONFIGURATION
 # ============================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
 PDF_FOLDER = os.path.join(
     BASE_DIR,
@@ -59,12 +66,12 @@ CHROMA_FOLDER = os.path.join(
 if not os.path.exists(PDF_FOLDER):
 
     st.error(
-        f"Document folder not found: {PDF_FOLDER}"
+        "Document folder not found."
     )
 
     st.info(
-        "Please create a 'documents' folder "
-        "and add PDF files to it."
+        "Create a 'documents' folder in your project "
+        "and add PDF files inside it."
     )
 
     st.stop()
@@ -80,21 +87,35 @@ def load_documents():
     all_documents = []
 
     pdf_files = [
+
         file
-        for file in os.listdir(PDF_FOLDER)
-        if file.lower().endswith(".pdf")
+
+        for file in os.listdir(
+            PDF_FOLDER
+        )
+
+        if file.lower().endswith(
+            ".pdf"
+        )
+
     ]
+
 
     if not pdf_files:
 
         return []
 
+
     for filename in pdf_files:
 
         file_path = os.path.join(
+
             PDF_FOLDER,
+
             filename
+
         )
+
 
         try:
 
@@ -102,52 +123,74 @@ def load_documents():
                 file_path
             )
 
+
             for page_number, page in enumerate(
+
                 reader.pages
+
             ):
 
                 text = page.extract_text()
 
+
                 if text and text.strip():
 
-                    all_documents.append({
+                    all_documents.append(
 
-                        "text": text.strip(),
+                        {
 
-                        "source": filename,
+                            "text":
+                            text.strip(),
 
-                        "page": page_number + 1
+                            "source":
+                            filename,
 
-                    })
+                            "page":
+                            page_number + 1
+
+                        }
+
+                    )
+
 
         except Exception as e:
 
             st.warning(
-                f"Could not process {filename}: {e}"
+
+                f"Could not process "
+                f"{filename}: {e}"
+
             )
+
 
     return all_documents
 
 
-# Load documents
+# Load PDF documents
 
 all_documents = load_documents()
 
 
-# Check if documents exist
+# ============================================================
+# CHECK DOCUMENTS
+# ============================================================
 
 if not all_documents:
 
     st.error(
+
         "No readable PDF documents were found "
         "inside the 'documents' folder."
+
     )
 
     st.stop()
 
 
 st.success(
+
     f"Loaded {len(all_documents)} PDF pages."
+
 )
 
 
@@ -156,46 +199,73 @@ st.success(
 # ============================================================
 
 @st.cache_data
-def create_chunks(documents):
+def create_chunks(
+    documents
+):
 
-    text_splitter = RecursiveCharacterTextSplitter(
+    text_splitter = (
 
-        chunk_size=800,
+        RecursiveCharacterTextSplitter(
 
-        chunk_overlap=100
+            chunk_size=800,
+
+            chunk_overlap=100
+
+        )
 
     )
 
+
     chunks = []
+
 
     for doc in documents:
 
-        split_texts = text_splitter.split_text(
-            doc["text"]
+        split_texts = (
+
+            text_splitter.split_text(
+
+                doc["text"]
+
+            )
+
         )
+
 
         for text in split_texts:
 
-            chunks.append({
+            chunks.append(
 
-                "text": text,
+                {
 
-                "source": doc["source"],
+                    "text":
+                    text,
 
-                "page": doc["page"]
+                    "source":
+                    doc["source"],
 
-            })
+                    "page":
+                    doc["page"]
+
+                }
+
+            )
+
 
     return chunks
 
 
 chunks = create_chunks(
+
     all_documents
+
 )
 
 
 st.info(
+
     f"Created {len(chunks)} text chunks."
+
 )
 
 
@@ -206,21 +276,36 @@ st.info(
 @st.cache_resource
 def load_embedding_model():
 
-    model = SentenceTransformer(
-        "sentence-transformers/all-MiniLM-L6-v2"
+    model = (
+
+        SentenceTransformer(
+
+            "sentence-transformers/"
+            "all-MiniLM-L6-v2"
+
+        )
+
     )
+
 
     return model
 
 
 try:
 
-    embedding_model = load_embedding_model()
+    embedding_model = (
+
+        load_embedding_model()
+
+    )
+
 
 except Exception as e:
 
     st.error(
+
         "Failed to load embedding model."
+
     )
 
     st.exception(e)
@@ -233,81 +318,139 @@ except Exception as e:
 # ============================================================
 
 @st.cache_resource
-def create_collection(chunks):
+def create_collection(
+    chunks
+):
 
     # Create persistent ChromaDB client
 
-    client = chromadb.PersistentClient(
-        path=CHROMA_FOLDER
+    client = (
+
+        chromadb.PersistentClient(
+
+            path=CHROMA_FOLDER
+
+        )
+
     )
+
 
     # Create or load collection
 
-    collection = client.get_or_create_collection(
-        name="technical_documents"
+    collection = (
+
+        client.get_or_create_collection(
+
+            name="technical_documents"
+
+        )
+
     )
 
-    # Add documents only if collection is empty
+
+    # Add documents only if empty
 
     if collection.count() == 0:
 
-        st.info(
-            "Creating document embeddings. "
-            "This may take some time on first startup..."
-        )
-
         chunk_texts = [
+
             chunk["text"]
+
             for chunk in chunks
+
         ]
+
 
         # Generate embeddings
 
-        chunk_embeddings = embedding_model.encode(
-            chunk_texts,
-            show_progress_bar=False,
-            convert_to_numpy=True
+        chunk_embeddings = (
+
+            embedding_model.encode(
+
+                chunk_texts,
+
+                show_progress_bar=False,
+
+                convert_to_numpy=True
+
+            )
+
         )
 
-        # Generate IDs
+
+        # Generate unique IDs
 
         chunk_ids = [
+
             f"chunk_{i}"
-            for i in range(len(chunks))
+
+            for i in range(
+
+                len(chunks)
+
+            )
+
         ]
+
 
         # Metadata
 
         metadatas = [
+
             {
-                "source": chunk["source"],
-                "page": chunk["page"]
+
+                "source":
+                chunk["source"],
+
+                "page":
+                chunk["page"]
+
             }
+
             for chunk in chunks
+
         ]
 
-        # Add documents to ChromaDB
+
+        # Store documents and embeddings
 
         collection.add(
+
             ids=chunk_ids,
+
             documents=chunk_texts,
-            embeddings=chunk_embeddings.tolist(),
+
+            embeddings=(
+                chunk_embeddings.tolist()
+            ),
+
             metadatas=metadatas
+
         )
+
 
     return collection
 
 
-# Create or load collection
-
 try:
 
-    collection = create_collection(chunks)
+    collection = (
+
+        create_collection(
+
+            chunks
+
+        )
+
+    )
+
 
 except Exception as e:
 
     st.error(
+
         "Failed to create or load ChromaDB."
+
     )
 
     st.exception(e)
@@ -315,23 +458,27 @@ except Exception as e:
     st.stop()
 
 
-# Show collection information
-
 st.success(
+
     f"Vector database ready with "
     f"{collection.count()} chunks."
+
 )
+
 
 # ============================================================
 # 9. RETRIEVAL FUNCTION
 # ============================================================
 
 def retrieve_documents(
+
     query,
+
     top_k=3
+
 ):
 
-    # Create query embedding
+    # Convert user question to embedding
 
     query_embedding = (
 
@@ -346,21 +493,25 @@ def retrieve_documents(
     )
 
 
-    # Search vector database
+    # Search ChromaDB
 
-    results = collection.query(
+    results = (
 
-        query_embeddings=[
+        collection.query(
 
-            query_embedding.tolist()
+            query_embeddings=[
 
-        ],
+                query_embedding.tolist()
 
-        n_results=min(
+            ],
 
-            top_k,
+            n_results=min(
 
-            collection.count()
+                top_k,
+
+                collection.count()
+
+            )
 
         )
 
@@ -371,65 +522,66 @@ def retrieve_documents(
 
 
 # ============================================================
-# 10. LOAD QWEN MODEL
+# 10. LOAD QWEN LLM
 # ============================================================
 
 @st.cache_resource
 def load_llm():
 
     model_name = (
+
         "Qwen/Qwen2.5-1.5B-Instruct"
+
     )
 
 
-    # Select device
+    # Use CPU on Streamlit deployment
 
-    device = (
+    device = "cpu"
 
-        "cuda"
 
-        if torch.cuda.is_available()
+    st.info(
 
-        else "cpu"
+        "Loading language model. "
+        "This may take some time on first startup."
 
     )
 
 
     # Load tokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(
+    tokenizer = (
 
-        model_name
+        AutoTokenizer.from_pretrained(
 
-    )
+            model_name
 
-
-    # Select data type
-
-    if device == "cuda":
-
-        dtype = torch.float16
-
-    else:
-
-        dtype = torch.float32
-
-
-    # Load model
-
-    model = AutoModelForCausalLM.from_pretrained(
-
-        model_name,
-
-        dtype=dtype
+        )
 
     )
 
 
-    # Move model to device
+    # CPU uses float32
+
+    model = (
+
+        AutoModelForCausalLM.from_pretrained(
+
+            model_name,
+
+            dtype=torch.float32
+
+        )
+
+    )
+
+
+    # Move model to CPU
 
     model = model.to(
+
         device
+
     )
 
 
@@ -449,25 +601,27 @@ def load_llm():
     )
 
 
-# Load LLM only when needed
-
-if "llm_loaded" not in st.session_state:
-
-    st.session_state.llm_loaded = False
-
-
 # ============================================================
 # 11. BUILD CONTEXT
 # ============================================================
 
 def build_context(
+
     results
+
 ):
 
     context_parts = []
 
-    if not results.get(
-        "documents"
+
+    if (
+
+        not results
+
+        or "documents"
+
+        not in results
+
     ):
 
         return ""
@@ -478,15 +632,24 @@ def build_context(
         return ""
 
 
+    if not results["documents"][0]:
+
+        return ""
+
+
     for text in results["documents"][0]:
 
         context_parts.append(
+
             text
+
         )
 
 
     return "\n\n".join(
+
         context_parts
+
     )
 
 
@@ -502,21 +665,35 @@ def rag_answer(
 
 ):
 
-    # Retrieve documents
+    # ========================================================
+    # STEP 1: RETRIEVE DOCUMENTS
+    # ========================================================
 
-    results = retrieve_documents(
+    results = (
 
-        question,
+        retrieve_documents(
 
-        top_k=top_k
+            question,
+
+            top_k=top_k
+
+        )
 
     )
 
 
-    # Build context
+    # ========================================================
+    # STEP 2: BUILD CONTEXT
+    # ========================================================
 
-    context = build_context(
-        results
+    context = (
+
+        build_context(
+
+            results
+
+        )
+
     )
 
 
@@ -524,7 +701,7 @@ def rag_answer(
 
         return (
 
-            "I could not find relevant information "
+            "I could not find the answer "
             "in the provided documents.",
 
             results
@@ -532,50 +709,76 @@ def rag_answer(
         )
 
 
-    # Limit context size
+    # Keep context manageable
 
-    context = context[:6000]
-
-
-    # Load LLM
-
-    tokenizer, model, device = load_llm()
+    context = context[:4000]
 
 
     # ========================================================
-    # Prompt
+    # STEP 3: LOAD LLM
+    # ========================================================
+
+    try:
+
+        (
+
+            tokenizer,
+
+            model,
+
+            device
+
+        ) = load_llm()
+
+
+    except Exception as e:
+
+        raise RuntimeError(
+
+            f"Failed to load Qwen model: {e}"
+
+        )
+
+
+    # ========================================================
+    # STEP 4: CREATE PROMPT
     # ========================================================
 
     messages = [
 
         {
 
-            "role": "system",
+            "role":
+            "system",
 
-            "content": """
+            "content":
+            """
+You are a technical document
+question-answering assistant.
 
-You are a technical document question-answering assistant.
-
-Answer the user's question using ONLY the provided context.
+Answer the user's question using
+ONLY the provided context.
 
 Do not use outside knowledge.
 
-If the answer is not available in the context, say:
+If the answer is not available
+in the context, say:
 
-"I could not find the answer in the provided documents."
+I could not find the answer
+in the provided documents.
 
 Give a clear and concise answer.
-
 """
 
         },
 
         {
 
-            "role": "user",
+            "role":
+            "user",
 
-            "content": f"""
-
+            "content":
+            f"""
 Context:
 
 {context}
@@ -584,7 +787,6 @@ Context:
 Question:
 
 {question}
-
 """
 
         }
@@ -593,42 +795,51 @@ Question:
 
 
     # ========================================================
-    # Create prompt
+    # STEP 5: CREATE CHAT PROMPT
     # ========================================================
 
-    text = tokenizer.apply_chat_template(
+    text = (
 
-        messages,
+        tokenizer.apply_chat_template(
 
-        tokenize=False,
+            messages,
 
-        add_generation_prompt=True
+            tokenize=False,
+
+            add_generation_prompt=True
+
+        )
 
     )
 
 
     # ========================================================
-    # Tokenize
+    # STEP 6: TOKENIZE
     # ========================================================
 
-    inputs = tokenizer(
+    inputs = (
 
-        text,
+        tokenizer(
 
-        return_tensors="pt",
+            text,
 
-        truncation=True,
+            return_tensors="pt",
 
-        max_length=2048
+            truncation=True,
+
+            max_length=1024
+
+        )
 
     )
 
 
-    # Move inputs to device
+    # Move tensors to CPU
 
     inputs = {
 
-        key: value.to(device)
+        key:
+        value.to(device)
 
         for key, value in inputs.items()
 
@@ -636,44 +847,85 @@ Question:
 
 
     # ========================================================
-    # Generate answer
+    # STEP 7: GENERATE ANSWER
     # ========================================================
 
-    with torch.no_grad():
+    try:
 
-        outputs = model.generate(
+        with torch.no_grad():
 
-            **inputs,
+            outputs = (
 
-            max_new_tokens=150,
+                model.generate(
 
-            do_sample=False,
+                    **inputs,
 
-            pad_token_id=tokenizer.eos_token_id
+                    max_new_tokens=100,
+
+                    do_sample=False,
+
+                    pad_token_id=(
+
+                        tokenizer.eos_token_id
+
+                    )
+
+                )
+
+            )
+
+
+    except Exception as e:
+
+        raise RuntimeError(
+
+            f"Error during model generation: {e}"
 
         )
 
 
     # ========================================================
-    # Extract generated tokens
+    # STEP 8: EXTRACT GENERATED TOKENS
     # ========================================================
 
-    generated_tokens = outputs[0][
+    generated_tokens = (
 
-        inputs["input_ids"].shape[1]:
+        outputs[0][
 
-    ]
+            inputs["input_ids"].shape[1]:
+
+        ]
+
+    )
 
 
-    # Decode answer
+    # ========================================================
+    # STEP 9: DECODE ANSWER
+    # ========================================================
 
-    answer = tokenizer.decode(
+    answer = (
 
-        generated_tokens,
+        tokenizer.decode(
 
-        skip_special_tokens=True
+            generated_tokens,
 
-    ).strip()
+            skip_special_tokens=True
+
+        )
+
+        .strip()
+
+    )
+
+
+    if not answer:
+
+        answer = (
+
+            "I could not generate an answer "
+            "from the provided documents."
+
+        )
 
 
     return (
@@ -691,6 +943,7 @@ Question:
 
 st.divider()
 
+
 question = st.text_input(
 
     "Ask your question",
@@ -706,7 +959,9 @@ question = st.text_input(
 
 
 if st.button(
+
     "🔍 Ask Question"
+
 ):
 
     if question.strip():
@@ -715,39 +970,50 @@ if st.button(
 
             with st.spinner(
 
-                "Searching documents and "
-                "generating answer..."
+                "Searching documents "
+                "and generating answer..."
 
             ):
 
-                answer, results = rag_answer(
+                answer, results = (
 
-                    question,
+                    rag_answer(
 
-                    top_k=3
+                        question,
+
+                        top_k=3
+
+                    )
 
                 )
 
 
             # =================================================
-            # Answer
+            # DISPLAY ANSWER
             # =================================================
 
             st.subheader(
+
                 "Answer"
+
             )
+
 
             st.write(
+
                 answer
+
             )
 
 
             # =================================================
-            # Sources
+            # DISPLAY SOURCES
             # =================================================
 
             st.subheader(
+
                 "Sources"
+
             )
 
 
@@ -757,32 +1023,43 @@ if st.button(
             if (
 
                 results.get(
+
                     "metadatas"
+
                 )
 
                 and results["metadatas"][0]
 
             ):
 
-                for metadata in results[
+                for metadata in (
 
-                    "metadatas"
+                    results["metadatas"][0]
 
-                ][0]:
+                ):
 
-                    source = metadata.get(
+                    source = (
 
-                        "source",
+                        metadata.get(
 
-                        "Unknown"
+                            "source",
+
+                            "Unknown"
+
+                        )
 
                     )
 
-                    page = metadata.get(
 
-                        "page",
+                    page = (
 
-                        "Unknown"
+                        metadata.get(
+
+                            "page",
+
+                            "Unknown"
+
+                        )
 
                     )
 
@@ -822,11 +1099,18 @@ if st.button(
         except Exception as e:
 
             st.error(
-                "An error occurred while "
-                "processing your question."
+
+                "❌ An error occurred "
+                "while processing your question."
+
             )
 
-            st.exception(e)
+
+            st.exception(
+
+                e
+
+            )
 
 
     else:
