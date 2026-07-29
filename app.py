@@ -230,10 +230,7 @@ except Exception as e:
 # ============================================================
 
 @st.cache_resource
-def create_collection(
-    chunks,
-    embedding_model
-):
+def create_collection(chunks):
 
     # Create persistent ChromaDB client
 
@@ -244,11 +241,8 @@ def create_collection(
     # Create or load collection
 
     collection = client.get_or_create_collection(
-
         name="technical_documents"
-
     )
-
 
     # Add documents only if collection is empty
 
@@ -260,88 +254,52 @@ def create_collection(
         )
 
         chunk_texts = [
-
             chunk["text"]
-
             for chunk in chunks
-
         ]
-
 
         # Generate embeddings
 
-        chunk_embeddings = (
-
-            embedding_model.encode(
-
-                chunk_texts,
-
-                show_progress_bar=False,
-
-                convert_to_numpy=True
-
-            )
-
+        chunk_embeddings = embedding_model.encode(
+            chunk_texts,
+            show_progress_bar=False,
+            convert_to_numpy=True
         )
-
 
         # Generate IDs
 
         chunk_ids = [
-
             f"chunk_{i}"
-
-            for i in range(
-                len(chunks)
-            )
-
+            for i in range(len(chunks))
         ]
-
 
         # Metadata
 
         metadatas = [
-
             {
-
                 "source": chunk["source"],
-
                 "page": chunk["page"]
-
             }
-
             for chunk in chunks
-
         ]
 
-
-        # Add to ChromaDB
+        # Add documents to ChromaDB
 
         collection.add(
-
             ids=chunk_ids,
-
             documents=chunk_texts,
-
             embeddings=chunk_embeddings.tolist(),
-
             metadatas=metadatas
-
         )
-
 
     return collection
 
 
+# Create or load collection
+
 try:
 
-    collection = create_collection(
-
-        chunks,
-
-        embedding_model
-
-    )
+    collection = create_collection(chunks)
 
 except Exception as e:
 
@@ -360,7 +318,6 @@ st.success(
     f"Vector database ready with "
     f"{collection.count()} chunks."
 )
-
 
 # ============================================================
 # 9. RETRIEVAL FUNCTION
