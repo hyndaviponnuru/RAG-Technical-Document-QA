@@ -1,10 +1,9 @@
 streamlit
 chromadb
 sentence-transformers
-transformers
-torch
 pypdf
 langchain-text-splitters
-accelerate
-sentencepiece
-torchvision
+groq
+rank_bm25
+ragas
+datasets
