@@ -1,5 +1,3 @@
-
-
 import os
 import streamlit as st
 import chromadb
@@ -35,14 +33,42 @@ st.write(
 
 
 # ============================================================
-# 3. DOCUMENT PATH
+# 3. PATH CONFIGURATION
 # ============================================================
 
-PDF_FOLDER = "documents"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+PDF_FOLDER = os.path.join(
+    BASE_DIR,
+    "documents"
+)
+
+CHROMA_FOLDER = os.path.join(
+    BASE_DIR,
+    "chroma_db"
+)
 
 
 # ============================================================
-# 4. LOAD PDF DOCUMENTS
+# 4. CHECK DOCUMENT FOLDER
+# ============================================================
+
+if not os.path.exists(PDF_FOLDER):
+
+    st.error(
+        f"Document folder not found: {PDF_FOLDER}"
+    )
+
+    st.info(
+        "Please create a 'documents' folder "
+        "and add PDF files to it."
+    )
+
+    st.stop()
+
+
+# ============================================================
+# 5. LOAD PDF DOCUMENTS
 # ============================================================
 
 @st.cache_data
@@ -50,16 +76,28 @@ def load_documents():
 
     all_documents = []
 
-    for filename in os.listdir(PDF_FOLDER):
+    pdf_files = [
+        file
+        for file in os.listdir(PDF_FOLDER)
+        if file.lower().endswith(".pdf")
+    ]
 
-        if filename.endswith(".pdf"):
+    if not pdf_files:
 
-            file_path = os.path.join(
-                PDF_FOLDER,
-                filename
+        return []
+
+    for filename in pdf_files:
+
+        file_path = os.path.join(
+            PDF_FOLDER,
+            filename
+        )
+
+        try:
+
+            reader = PdfReader(
+                file_path
             )
-
-            reader = PdfReader(file_path)
 
             for page_number, page in enumerate(
                 reader.pages
@@ -67,26 +105,51 @@ def load_documents():
 
                 text = page.extract_text()
 
-                if text:
+                if text and text.strip():
 
                     all_documents.append({
 
-                        "text": text,
+                        "text": text.strip(),
 
                         "source": filename,
 
-                        "page": page_number
+                        "page": page_number + 1
 
                     })
+
+        except Exception as e:
+
+            st.warning(
+                f"Could not process {filename}: {e}"
+            )
 
     return all_documents
 
 
+# Load documents
+
 all_documents = load_documents()
 
 
+# Check if documents exist
+
+if not all_documents:
+
+    st.error(
+        "No readable PDF documents were found "
+        "inside the 'documents' folder."
+    )
+
+    st.stop()
+
+
+st.success(
+    f"Loaded {len(all_documents)} PDF pages."
+)
+
+
 # ============================================================
-# 5. CHUNK DOCUMENTS
+# 6. CHUNK DOCUMENTS
 # ============================================================
 
 @st.cache_data
@@ -128,29 +191,57 @@ chunks = create_chunks(
 )
 
 
+st.info(
+    f"Created {len(chunks)} text chunks."
+)
+
+
 # ============================================================
-# 6. LOAD EMBEDDING MODEL
+# 7. LOAD EMBEDDING MODEL
 # ============================================================
 
 @st.cache_resource
 def load_embedding_model():
 
-    return SentenceTransformer(
-        "all-MiniLM-L6-v2"
+    model = SentenceTransformer(
+        "sentence-transformers/all-MiniLM-L6-v2"
     )
 
+    return model
 
-embedding_model = load_embedding_model()
+
+try:
+
+    embedding_model = load_embedding_model()
+
+except Exception as e:
+
+    st.error(
+        "Failed to load embedding model."
+    )
+
+    st.exception(e)
+
+    st.stop()
 
 
 # ============================================================
-# 7. CREATE CHROMADB
+# 8. CREATE / LOAD CHROMADB
 # ============================================================
 
 @st.cache_resource
-def create_collection():
+def create_collection(
+    chunks,
+    embedding_model
+):
 
-    client = chromadb.Client()
+    # Create persistent ChromaDB client
+
+    client = chromadb.PersistentClient(
+        path=CHROMA_FOLDER
+    )
+
+    # Create or load collection
 
     collection = client.get_or_create_collection(
 
@@ -158,9 +249,15 @@ def create_collection():
 
     )
 
-    # Add documents only once
+
+    # Add documents only if collection is empty
 
     if collection.count() == 0:
+
+        st.info(
+            "Creating document embeddings. "
+            "This may take some time on first startup..."
+        )
 
         chunk_texts = [
 
@@ -170,17 +267,25 @@ def create_collection():
 
         ]
 
+
+        # Generate embeddings
+
         chunk_embeddings = (
 
             embedding_model.encode(
 
                 chunk_texts,
 
-                show_progress_bar=True
+                show_progress_bar=False,
+
+                convert_to_numpy=True
 
             )
 
         )
+
+
+        # Generate IDs
 
         chunk_ids = [
 
@@ -192,15 +297,16 @@ def create_collection():
 
         ]
 
+
+        # Metadata
+
         metadatas = [
 
             {
 
-                "source":
-                chunk["source"],
+                "source": chunk["source"],
 
-                "page":
-                chunk["page"]
+                "page": chunk["page"]
 
             }
 
@@ -208,27 +314,56 @@ def create_collection():
 
         ]
 
+
+        # Add to ChromaDB
+
         collection.add(
 
             ids=chunk_ids,
 
             documents=chunk_texts,
 
-            embeddings=
-            chunk_embeddings.tolist(),
+            embeddings=chunk_embeddings.tolist(),
 
             metadatas=metadatas
 
         )
 
+
     return collection
 
 
-collection = create_collection()
+try:
+
+    collection = create_collection(
+
+        chunks,
+
+        embedding_model
+
+    )
+
+except Exception as e:
+
+    st.error(
+        "Failed to create or load ChromaDB."
+    )
+
+    st.exception(e)
+
+    st.stop()
+
+
+# Show collection information
+
+st.success(
+    f"Vector database ready with "
+    f"{collection.count()} chunks."
+)
 
 
 # ============================================================
-# 8. RETRIEVAL FUNCTION
+# 9. RETRIEVAL FUNCTION
 # ============================================================
 
 def retrieve_documents(
@@ -236,29 +371,47 @@ def retrieve_documents(
     top_k=3
 ):
 
+    # Create query embedding
+
     query_embedding = (
 
         embedding_model.encode(
-            query
+
+            query,
+
+            convert_to_numpy=True
+
         )
 
     )
 
+
+    # Search vector database
+
     results = collection.query(
 
         query_embeddings=[
+
             query_embedding.tolist()
+
         ],
 
-        n_results=top_k
+        n_results=min(
+
+            top_k,
+
+            collection.count()
+
+        )
 
     )
+
 
     return results
 
 
 # ============================================================
-# 9. LOAD QWEN MODEL
+# 10. LOAD QWEN MODEL
 # ============================================================
 
 @st.cache_resource
@@ -268,44 +421,109 @@ def load_llm():
         "Qwen/Qwen2.5-1.5B-Instruct"
     )
 
-    tokenizer = (
-        AutoTokenizer.from_pretrained(
-            model_name
-        )
+
+    # Select device
+
+    device = (
+
+        "cuda"
+
+        if torch.cuda.is_available()
+
+        else "cpu"
+
     )
 
-    model = (
-        AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=(
-                torch.float16
-                if torch.cuda.is_available()
-                else torch.float32
-            )
-        )
+
+    # Load tokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(
+
+        model_name
+
     )
 
-    if torch.cuda.is_available():
 
-        model = model.to("cuda")
+    # Select data type
 
-    return tokenizer, model
+    if device == "cuda":
+
+        dtype = torch.float16
+
+    else:
+
+        dtype = torch.float32
 
 
-tokenizer, model = load_llm()
+    # Load model
+
+    model = AutoModelForCausalLM.from_pretrained(
+
+        model_name,
+
+        dtype=dtype
+
+    )
+
+
+    # Move model to device
+
+    model = model.to(
+        device
+    )
+
+
+    # Evaluation mode
+
+    model.eval()
+
+
+    return (
+
+        tokenizer,
+
+        model,
+
+        device
+
+    )
+
+
+# Load LLM only when needed
+
+if "llm_loaded" not in st.session_state:
+
+    st.session_state.llm_loaded = False
 
 
 # ============================================================
-# 10. BUILD CONTEXT
+# 11. BUILD CONTEXT
 # ============================================================
 
-def build_context(results):
+def build_context(
+    results
+):
 
     context_parts = []
 
+    if not results.get(
+        "documents"
+    ):
+
+        return ""
+
+
+    if not results["documents"]:
+
+        return ""
+
+
     for text in results["documents"][0]:
 
-        context_parts.append(text)
+        context_parts.append(
+            text
+        )
+
 
     return "\n\n".join(
         context_parts
@@ -313,15 +531,18 @@ def build_context(results):
 
 
 # ============================================================
-# 11. RAG ANSWER FUNCTION
+# 12. RAG ANSWER FUNCTION
 # ============================================================
 
 def rag_answer(
+
     question,
+
     top_k=3
+
 ):
 
-    # Retrieve relevant documents
+    # Retrieve documents
 
     results = retrieve_documents(
 
@@ -338,10 +559,32 @@ def rag_answer(
         results
     )
 
+
+    if not context:
+
+        return (
+
+            "I could not find relevant information "
+            "in the provided documents.",
+
+            results
+
+        )
+
+
+    # Limit context size
+
     context = context[:6000]
 
 
+    # Load LLM
+
+    tokenizer, model, device = load_llm()
+
+
+    # ========================================================
     # Prompt
+    # ========================================================
 
     messages = [
 
@@ -350,22 +593,19 @@ def rag_answer(
             "role": "system",
 
             "content": """
-You are a technical document
-question-answering assistant.
 
-Answer the user's question using
-ONLY the provided context.
+You are a technical document question-answering assistant.
+
+Answer the user's question using ONLY the provided context.
 
 Do not use outside knowledge.
 
-If the answer is not available
-in the context, say:
+If the answer is not available in the context, say:
 
-I could not find the answer
-in the provided documents.
+"I could not find the answer in the provided documents."
 
-Give a clear and concise answer
-in 2 to 4 sentences.
+Give a clear and concise answer.
+
 """
 
         },
@@ -375,13 +615,16 @@ in 2 to 4 sentences.
             "role": "user",
 
             "content": f"""
+
 Context:
 
 {context}
 
+
 Question:
 
 {question}
+
 """
 
         }
@@ -389,7 +632,9 @@ Question:
     ]
 
 
+    # ========================================================
     # Create prompt
+    # ========================================================
 
     text = tokenizer.apply_chat_template(
 
@@ -402,7 +647,9 @@ Question:
     )
 
 
+    # ========================================================
     # Tokenize
+    # ========================================================
 
     inputs = tokenizer(
 
@@ -412,17 +659,25 @@ Question:
 
         truncation=True,
 
-        max_length=4096
+        max_length=2048
 
     )
 
 
-    if torch.cuda.is_available():
+    # Move inputs to device
 
-        inputs = inputs.to("cuda")
+    inputs = {
+
+        key: value.to(device)
+
+        for key, value in inputs.items()
+
+    }
 
 
-    # Generate
+    # ========================================================
+    # Generate answer
+    # ========================================================
 
     with torch.no_grad():
 
@@ -432,19 +687,25 @@ Question:
 
             max_new_tokens=150,
 
-            do_sample=False
+            do_sample=False,
+
+            pad_token_id=tokenizer.eos_token_id
 
         )
 
 
-    # Extract answer
+    # ========================================================
+    # Extract generated tokens
+    # ========================================================
 
     generated_tokens = outputs[0][
 
-        inputs.input_ids.shape[1]:
+        inputs["input_ids"].shape[1]:
 
     ]
 
+
+    # Decode answer
 
     answer = tokenizer.decode(
 
@@ -455,103 +716,158 @@ Question:
     ).strip()
 
 
-    return answer, results
+    return (
+
+        answer,
+
+        results
+
+    )
 
 
 # ============================================================
-# 12. STREAMLIT USER INTERFACE
+# 13. STREAMLIT USER INTERFACE
 # ============================================================
+
+st.divider()
 
 question = st.text_input(
 
     "Ask your question",
 
-    placeholder=
-    "Example: What is Retrieval-Augmented Generation?"
+    placeholder=(
+
+        "Example: "
+        "What is Retrieval-Augmented Generation?"
+
+    )
 
 )
 
 
-if st.button("🔍 Ask Question"):
+if st.button(
+    "🔍 Ask Question"
+):
 
     if question.strip():
 
-        with st.spinner(
+        try:
 
-            "Searching documents and generating answer..."
+            with st.spinner(
 
-        ):
+                "Searching documents and "
+                "generating answer..."
 
-            answer, results = rag_answer(
+            ):
 
-                question,
+                answer, results = rag_answer(
 
-                top_k=3
+                    question,
 
-            )
-
-
-        # Answer
-
-        st.subheader(
-            "Answer"
-        )
-
-        st.write(
-            answer
-        )
-
-
-        # Sources
-
-        st.subheader(
-            "Sources"
-        )
-
-
-        shown_sources = set()
-
-
-        for i in range(
-
-            len(
-                results["documents"][0]
-            )
-
-        ):
-
-            source = results[
-                "metadatas"
-            ][0][i]["source"]
-
-
-            page = results[
-                "metadatas"
-            ][0][i]["page"]
-
-
-            citation = (
-
-                source,
-
-                page
-
-            )
-
-
-            if citation not in shown_sources:
-
-                st.write(
-
-                    f"📄 {source} | Page {page}"
+                    top_k=3
 
                 )
 
-                shown_sources.add(
 
-                    citation
+            # =================================================
+            # Answer
+            # =================================================
 
+            st.subheader(
+                "Answer"
+            )
+
+            st.write(
+                answer
+            )
+
+
+            # =================================================
+            # Sources
+            # =================================================
+
+            st.subheader(
+                "Sources"
+            )
+
+
+            shown_sources = set()
+
+
+            if (
+
+                results.get(
+                    "metadatas"
                 )
+
+                and results["metadatas"][0]
+
+            ):
+
+                for metadata in results[
+
+                    "metadatas"
+
+                ][0]:
+
+                    source = metadata.get(
+
+                        "source",
+
+                        "Unknown"
+
+                    )
+
+                    page = metadata.get(
+
+                        "page",
+
+                        "Unknown"
+
+                    )
+
+
+                    citation = (
+
+                        source,
+
+                        page
+
+                    )
+
+
+                    if (
+
+                        citation
+
+                        not in shown_sources
+
+                    ):
+
+                        st.write(
+
+                            f"📄 {source} "
+                            f"| Page {page}"
+
+                        )
+
+
+                        shown_sources.add(
+
+                            citation
+
+                        )
+
+
+        except Exception as e:
+
+            st.error(
+                "An error occurred while "
+                "processing your question."
+            )
+
+            st.exception(e)
+
 
     else:
 
