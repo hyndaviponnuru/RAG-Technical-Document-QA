@@ -1,7 +1,7 @@
 streamlit
 chromadb
 sentence-transformers
-PyMuPDF
+pypdf
 langchain-text-splitters
 groq
 rank_bm25
