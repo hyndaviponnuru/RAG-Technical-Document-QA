@@ -1,18 +1,10 @@
 import os
-os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+import re
 import streamlit as st
 import chromadb
-import torch
-
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM
-)
-from langchain_text_splitters import (
-    RecursiveCharacterTextSplitter
-)
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 # ============================================================
@@ -30,13 +22,16 @@ st.set_page_config(
 # 2. TITLE
 # ============================================================
 
-st.title(
-    "📚 Technical Document QA Assistant"
-)
+st.title("📚 Technical Document QA Assistant")
 
 st.write(
     "Ask questions about technical research documents "
     "using Retrieval-Augmented Generation (RAG)."
+)
+
+st.caption(
+    "The system retrieves the most relevant passages "
+    "from your uploaded technical documents."
 )
 
 
@@ -66,12 +61,12 @@ CHROMA_FOLDER = os.path.join(
 if not os.path.exists(PDF_FOLDER):
 
     st.error(
-        "Document folder not found."
+        "The 'documents' folder was not found."
     )
 
     st.info(
-        "Create a 'documents' folder in your project "
-        "and add PDF files inside it."
+        "Create a folder named 'documents' "
+        "and place your PDF files inside it."
     )
 
     st.stop()
@@ -86,36 +81,24 @@ def load_documents():
 
     all_documents = []
 
-    pdf_files = [
-
-        file
-
-        for file in os.listdir(
-            PDF_FOLDER
-        )
-
-        if file.lower().endswith(
-            ".pdf"
-        )
-
-    ]
-
+    pdf_files = sorted(
+        [
+            file
+            for file in os.listdir(PDF_FOLDER)
+            if file.lower().endswith(".pdf")
+        ]
+    )
 
     if not pdf_files:
 
         return []
 
-
     for filename in pdf_files:
 
         file_path = os.path.join(
-
             PDF_FOLDER,
-
             filename
-
         )
-
 
         try:
 
@@ -123,189 +106,117 @@ def load_documents():
                 file_path
             )
 
-
             for page_number, page in enumerate(
-
                 reader.pages
-
             ):
 
                 text = page.extract_text()
 
-
                 if text and text.strip():
 
                     all_documents.append(
-
                         {
-
-                            "text":
-                            text.strip(),
-
-                            "source":
-                            filename,
-
-                            "page":
-                            page_number + 1
-
+                            "text": text.strip(),
+                            "source": filename,
+                            "page": page_number + 1
                         }
-
                     )
-
 
         except Exception as e:
 
             st.warning(
-
-                f"Could not process "
-                f"{filename}: {e}"
-
+                f"Could not process {filename}: {e}"
             )
-
 
     return all_documents
 
 
-# Load PDF documents
+# Load documents
 
 all_documents = load_documents()
 
 
 # ============================================================
-# CHECK DOCUMENTS
+# 6. CHECK DOCUMENTS
 # ============================================================
 
 if not all_documents:
 
     st.error(
-
-        "No readable PDF documents were found "
-        "inside the 'documents' folder."
-
+        "No readable PDF documents were found."
     )
 
     st.stop()
 
 
 st.success(
-
     f"Loaded {len(all_documents)} PDF pages."
-
 )
 
 
 # ============================================================
-# 6. CHUNK DOCUMENTS
+# 7. CREATE TEXT CHUNKS
 # ============================================================
 
 @st.cache_data
-def create_chunks(
-    documents
-):
+def create_chunks(documents):
 
-    text_splitter = (
-
-        RecursiveCharacterTextSplitter(
-
-            chunk_size=800,
-
-            chunk_overlap=100
-
-        )
-
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=100
     )
-
 
     chunks = []
 
+    for document in documents:
 
-    for doc in documents:
-
-        split_texts = (
-
-            text_splitter.split_text(
-
-                doc["text"]
-
-            )
-
+        split_texts = text_splitter.split_text(
+            document["text"]
         )
-
 
         for text in split_texts:
 
             chunks.append(
-
                 {
-
-                    "text":
-                    text,
-
-                    "source":
-                    doc["source"],
-
-                    "page":
-                    doc["page"]
-
+                    "text": text,
+                    "source": document["source"],
+                    "page": document["page"]
                 }
-
             )
-
 
     return chunks
 
 
 chunks = create_chunks(
-
     all_documents
-
 )
 
 
 st.info(
-
     f"Created {len(chunks)} text chunks."
-
 )
 
 
 # ============================================================
-# 7. LOAD EMBEDDING MODEL
+# 8. LOAD SENTENCE TRANSFORMER EMBEDDING MODEL
 # ============================================================
 
 @st.cache_resource
 def load_embedding_model():
 
-    model = (
-
-        SentenceTransformer(
-
-            "sentence-transformers/"
-            "all-MiniLM-L6-v2"
-
-        )
-
+    return SentenceTransformer(
+        "sentence-transformers/all-MiniLM-L6-v2"
     )
-
-
-    return model
 
 
 try:
 
-    embedding_model = (
-
-        load_embedding_model()
-
-    )
-
+    embedding_model = load_embedding_model()
 
 except Exception as e:
 
     st.error(
-
         "Failed to load embedding model."
-
     )
 
     st.exception(e)
@@ -314,143 +225,78 @@ except Exception as e:
 
 
 # ============================================================
-# 8. CREATE / LOAD CHROMADB
+# 9. CREATE / LOAD CHROMADB
 # ============================================================
 
 @st.cache_resource
-def create_collection(
-    chunks
-):
+def create_collection(chunks):
 
-    # Create persistent ChromaDB client
+    # Persistent ChromaDB
 
-    client = (
-
-        chromadb.PersistentClient(
-
-            path=CHROMA_FOLDER
-
-        )
-
+    client = chromadb.PersistentClient(
+        path=CHROMA_FOLDER
     )
 
-
-    # Create or load collection
-
-    collection = (
-
-        client.get_or_create_collection(
-
-            name="technical_documents"
-
-        )
-
+    collection = client.get_or_create_collection(
+        name="technical_documents"
     )
 
-
-    # Add documents only if empty
+    # Add data only if collection is empty
 
     if collection.count() == 0:
 
         chunk_texts = [
-
             chunk["text"]
-
             for chunk in chunks
-
         ]
-
 
         # Generate embeddings
 
-        chunk_embeddings = (
-
-            embedding_model.encode(
-
-                chunk_texts,
-
-                show_progress_bar=False,
-
-                convert_to_numpy=True
-
-            )
-
+        embeddings = embedding_model.encode(
+            chunk_texts,
+            show_progress_bar=False,
+            convert_to_numpy=True
         )
 
+        # IDs
 
-        # Generate unique IDs
-
-        chunk_ids = [
-
+        ids = [
             f"chunk_{i}"
-
-            for i in range(
-
-                len(chunks)
-
-            )
-
+            for i in range(len(chunks))
         ]
-
 
         # Metadata
 
         metadatas = [
-
             {
-
-                "source":
-                chunk["source"],
-
-                "page":
-                chunk["page"]
-
+                "source": chunk["source"],
+                "page": chunk["page"]
             }
-
             for chunk in chunks
-
         ]
 
-
-        # Store documents and embeddings
+        # Store in ChromaDB
 
         collection.add(
-
-            ids=chunk_ids,
-
+            ids=ids,
             documents=chunk_texts,
-
-            embeddings=(
-                chunk_embeddings.tolist()
-            ),
-
+            embeddings=embeddings.tolist(),
             metadatas=metadatas
-
         )
-
 
     return collection
 
 
 try:
 
-    collection = (
-
-        create_collection(
-
-            chunks
-
-        )
-
+    collection = create_collection(
+        chunks
     )
-
 
 except Exception as e:
 
     st.error(
-
         "Failed to create or load ChromaDB."
-
     )
 
     st.exception(e)
@@ -459,486 +305,227 @@ except Exception as e:
 
 
 st.success(
-
     f"Vector database ready with "
     f"{collection.count()} chunks."
-
 )
 
 
 # ============================================================
-# 9. RETRIEVAL FUNCTION
+# 10. RETRIEVE RELEVANT DOCUMENTS
 # ============================================================
 
 def retrieve_documents(
-
     query,
-
     top_k=3
-
 ):
 
-    # Convert user question to embedding
+    # Convert query to embedding
 
-    query_embedding = (
-
-        embedding_model.encode(
-
-            query,
-
-            convert_to_numpy=True
-
-        )
-
+    query_embedding = embedding_model.encode(
+        query,
+        convert_to_numpy=True
     )
-
 
     # Search ChromaDB
 
-    results = (
-
-        collection.query(
-
-            query_embeddings=[
-
-                query_embedding.tolist()
-
-            ],
-
-            n_results=min(
-
-                top_k,
-
-                collection.count()
-
-            )
-
+    results = collection.query(
+        query_embeddings=[
+            query_embedding.tolist()
+        ],
+        n_results=min(
+            top_k,
+            collection.count()
         )
-
     )
-
 
     return results
 
 
 # ============================================================
-# 10. LOAD QWEN LLM
+# 11. SIMPLE EXTRACTIVE ANSWER GENERATION
 # ============================================================
 
-@st.cache_resource
-def load_llm():
-
-    model_name = (
-
-        "Qwen/Qwen2.5-1.5B-Instruct"
-
-    )
-
-
-    # Use CPU on Streamlit deployment
-
-    device = "cpu"
-
-
-    st.info(
-
-        "Loading language model. "
-        "This may take some time on first startup."
-
-    )
-
-
-    # Load tokenizer
-
-    tokenizer = (
-
-        AutoTokenizer.from_pretrained(
-
-            model_name
-
-        )
-
-    )
-
-
-    # CPU uses float32
-
-    model = (
-
-        AutoModelForCausalLM.from_pretrained(
-
-            model_name,
-
-            dtype=torch.float32
-
-        )
-
-    )
-
-
-    # Move model to CPU
-
-    model = model.to(
-
-        device
-
-    )
-
-
-    # Evaluation mode
-
-    model.eval()
-
-
-    return (
-
-        tokenizer,
-
-        model,
-
-        device
-
-    )
-
-
-# ============================================================
-# 11. BUILD CONTEXT
-# ============================================================
-
-def build_context(
-
-    results
-
+def generate_answer(
+    question,
+    retrieved_documents
 ):
-
-    context_parts = []
-
 
     if (
-
-        not results
-
-        or "documents"
-
-        not in results
-
+        not retrieved_documents
+        or "documents" not in retrieved_documents
     ):
 
-        return ""
-
-
-    if not results["documents"]:
-
-        return ""
-
-
-    if not results["documents"][0]:
-
-        return ""
-
-
-    for text in results["documents"][0]:
-
-        context_parts.append(
-
-            text
-
+        return (
+            "I could not find the answer "
+            "in the provided documents."
         )
 
 
-    return "\n\n".join(
-
-        context_parts
-
-    )
+    documents = retrieved_documents[
+        "documents"
+    ][0]
 
 
-# ============================================================
-# 12. RAG ANSWER FUNCTION
-# ============================================================
-
-def rag_answer(
-
-    question,
-
-    top_k=3
-
-):
-
-    # ========================================================
-    # STEP 1: RETRIEVE DOCUMENTS
-    # ========================================================
-
-    results = (
-
-        retrieve_documents(
-
-            question,
-
-            top_k=top_k
-
-        )
-
-    )
-
-
-    # ========================================================
-    # STEP 2: BUILD CONTEXT
-    # ========================================================
-
-    context = (
-
-        build_context(
-
-            results
-
-        )
-
-    )
-
-
-    if not context:
+    if not documents:
 
         return (
-
             "I could not find the answer "
-            "in the provided documents.",
-
-            results
-
+            "in the provided documents."
         )
 
 
-    # Keep context manageable
+    # --------------------------------------------------------
+    # Extract important keywords from question
+    # --------------------------------------------------------
 
-    context = context[:4000]
+    question_words = set(
 
+        re.findall(
 
-    # ========================================================
-    # STEP 3: LOAD LLM
-    # ========================================================
+            r"\b[a-zA-Z]{3,}\b",
 
-    try:
-
-        (
-
-            tokenizer,
-
-            model,
-
-            device
-
-        ) = load_llm()
-
-
-    except Exception as e:
-
-        raise RuntimeError(
-
-            f"Failed to load Qwen model: {e}"
-
-        )
-
-
-    # ========================================================
-    # STEP 4: CREATE PROMPT
-    # ========================================================
-
-    messages = [
-
-        {
-
-            "role":
-            "system",
-
-            "content":
-            """
-You are a technical document
-question-answering assistant.
-
-Answer the user's question using
-ONLY the provided context.
-
-Do not use outside knowledge.
-
-If the answer is not available
-in the context, say:
-
-I could not find the answer
-in the provided documents.
-
-Give a clear and concise answer.
-"""
-
-        },
-
-        {
-
-            "role":
-            "user",
-
-            "content":
-            f"""
-Context:
-
-{context}
-
-
-Question:
-
-{question}
-"""
-
-        }
-
-    ]
-
-
-    # ========================================================
-    # STEP 5: CREATE CHAT PROMPT
-    # ========================================================
-
-    text = (
-
-        tokenizer.apply_chat_template(
-
-            messages,
-
-            tokenize=False,
-
-            add_generation_prompt=True
+            question.lower()
 
         )
 
     )
 
 
-    # ========================================================
-    # STEP 6: TOKENIZE
-    # ========================================================
+    scored_sentences = []
 
-    inputs = (
 
-        tokenizer(
+    # --------------------------------------------------------
+    # Score sentences based on keyword overlap
+    # --------------------------------------------------------
 
-            text,
+    for document in documents:
 
-            return_tensors="pt",
+        sentences = re.split(
 
-            truncation=True,
+            r"(?<=[.!?])\s+",
 
-            max_length=1024
+            document
 
         )
 
-    )
+
+        for sentence in sentences:
+
+            sentence = sentence.strip()
 
 
-    # Move tensors to CPU
+            if not sentence:
 
-    inputs = {
-
-        key:
-        value.to(device)
-
-        for key, value in inputs.items()
-
-    }
+                continue
 
 
-    # ========================================================
-    # STEP 7: GENERATE ANSWER
-    # ========================================================
+            sentence_words = set(
 
-    try:
+                re.findall(
 
-        with torch.no_grad():
+                    r"\b[a-zA-Z]{3,}\b",
 
-            outputs = (
-
-                model.generate(
-
-                    **inputs,
-
-                    max_new_tokens=100,
-
-                    do_sample=False,
-
-                    pad_token_id=(
-
-                        tokenizer.eos_token_id
-
-                    )
+                    sentence.lower()
 
                 )
 
             )
 
 
-    except Exception as e:
+            overlap = (
 
-        raise RuntimeError(
+                question_words
 
-            f"Error during model generation: {e}"
+                & sentence_words
 
+            )
+
+
+            score = len(overlap)
+
+
+            if score > 0:
+
+                scored_sentences.append(
+
+                    (
+                        score,
+
+                        sentence
+
+                    )
+
+                )
+
+
+    # --------------------------------------------------------
+    # If no matching sentence
+    # --------------------------------------------------------
+
+    if not scored_sentences:
+
+        return (
+
+            "I could not find a direct answer "
+            "in the retrieved document passages."
         )
 
 
-    # ========================================================
-    # STEP 8: EXTRACT GENERATED TOKENS
-    # ========================================================
+    # --------------------------------------------------------
+    # Sort by relevance
+    # --------------------------------------------------------
 
-    generated_tokens = (
+    scored_sentences.sort(
 
-        outputs[0][
+        key=lambda x: x[0],
 
-            inputs["input_ids"].shape[1]:
-
-        ]
+        reverse=True
 
     )
 
 
-    # ========================================================
-    # STEP 9: DECODE ANSWER
-    # ========================================================
+    # --------------------------------------------------------
+    # Select top sentences
+    # --------------------------------------------------------
 
-    answer = (
+    selected_sentences = []
 
-        tokenizer.decode(
+    seen = set()
 
-            generated_tokens,
 
-            skip_special_tokens=True
+    for score, sentence in scored_sentences:
 
-        )
+        normalized = sentence.lower()
 
-        .strip()
 
+        if normalized not in seen:
+
+            selected_sentences.append(
+                sentence
+            )
+
+            seen.add(
+                normalized
+            )
+
+
+        if len(
+            selected_sentences
+        ) >= 4:
+
+            break
+
+
+    answer = " ".join(
+        selected_sentences
     )
 
 
-    if not answer:
-
-        answer = (
-
-            "I could not generate an answer "
-            "from the provided documents."
-
-        )
-
-
-    return (
-
-        answer,
-
-        results
-
-    )
+    return answer
 
 
 # ============================================================
-# 13. STREAMLIT USER INTERFACE
+# 12. STREAMLIT USER INTERFACE
 # ============================================================
 
 st.divider()
@@ -949,174 +536,164 @@ question = st.text_input(
     "Ask your question",
 
     placeholder=(
-
         "Example: "
         "What is Retrieval-Augmented Generation?"
-
     )
 
 )
 
 
 if st.button(
-
     "🔍 Ask Question"
-
 ):
 
-    if question.strip():
+    if not question.strip():
 
-        try:
+        st.warning(
+            "Please enter a question."
+        )
 
-            with st.spinner(
+        st.stop()
 
-                "Searching documents "
-                "and generating answer..."
 
+    try:
+
+        with st.spinner(
+            "Searching technical documents..."
+        ):
+
+            # Retrieve relevant chunks
+
+            results = retrieve_documents(
+
+                question,
+
+                top_k=3
+
+            )
+
+
+            # Generate answer from retrieved context
+
+            answer = generate_answer(
+
+                question,
+
+                results
+
+            )
+
+
+        # ====================================================
+        # DISPLAY ANSWER
+        # ====================================================
+
+        st.subheader(
+            "Answer"
+        )
+
+        st.write(
+            answer
+        )
+
+
+        # ====================================================
+        # DISPLAY RETRIEVED CONTEXT
+        # ====================================================
+
+        with st.expander(
+            "View Retrieved Context"
+        ):
+
+            if results.get(
+                "documents"
             ):
 
-                answer, results = (
+                for i, document in enumerate(
 
-                    rag_answer(
+                    results["documents"][0],
 
-                        question,
-
-                        top_k=3
-
-                    )
-
-                )
-
-
-            # =================================================
-            # DISPLAY ANSWER
-            # =================================================
-
-            st.subheader(
-
-                "Answer"
-
-            )
-
-
-            st.write(
-
-                answer
-
-            )
-
-
-            # =================================================
-            # DISPLAY SOURCES
-            # =================================================
-
-            st.subheader(
-
-                "Sources"
-
-            )
-
-
-            shown_sources = set()
-
-
-            if (
-
-                results.get(
-
-                    "metadatas"
-
-                )
-
-                and results["metadatas"][0]
-
-            ):
-
-                for metadata in (
-
-                    results["metadatas"][0]
+                    start=1
 
                 ):
 
-                    source = (
+                    st.markdown(
 
-                        metadata.get(
-
-                            "source",
-
-                            "Unknown"
-
-                        )
+                        f"**Retrieved Passage {i}**"
 
                     )
 
-
-                    page = (
-
-                        metadata.get(
-
-                            "page",
-
-                            "Unknown"
-
-                        )
-
+                    st.write(
+                        document
                     )
 
+                    st.divider()
 
-                    citation = (
 
-                        source,
+        # ====================================================
+        # DISPLAY SOURCES
+        # ====================================================
 
-                        page
+        st.subheader(
+            "Sources"
+        )
 
+
+        shown_sources = set()
+
+
+        if (
+
+            results.get(
+                "metadatas"
+            )
+
+            and results["metadatas"][0]
+
+        ):
+
+            for metadata in (
+
+                results["metadatas"][0]
+
+            ):
+
+                source = metadata.get(
+                    "source",
+                    "Unknown"
+                )
+
+                page = metadata.get(
+                    "page",
+                    "Unknown"
+                )
+
+
+                citation = (
+                    source,
+                    page
+                )
+
+
+                if citation not in shown_sources:
+
+                    st.write(
+                        f"📄 {source} "
+                        f"| Page {page}"
                     )
 
-
-                    if (
-
+                    shown_sources.add(
                         citation
-
-                        not in shown_sources
-
-                    ):
-
-                        st.write(
-
-                            f"📄 {source} "
-                            f"| Page {page}"
-
-                        )
+                    )
 
 
-                        shown_sources.add(
+    except Exception as e:
 
-                            citation
+        st.error(
+            "An error occurred while "
+            "processing your question."
+        )
 
-                        )
-
-
-        except Exception as e:
-
-            st.error(
-
-                "❌ An error occurred "
-                "while processing your question."
-
-            )
-
-
-            st.exception(
-
-                e
-
-            )
-
-
-    else:
-
-        st.warning(
-
-            "Please enter a question."
-
+        st.exception(
+            e
         )
