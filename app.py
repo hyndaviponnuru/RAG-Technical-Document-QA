@@ -1,8 +1,11 @@
 import os
-import re
+import hashlib
+
 import streamlit as st
 import chromadb
+
 from pypdf import PdfReader
+
 from sentence_transformers import (
     SentenceTransformer,
     CrossEncoder
@@ -40,8 +43,8 @@ st.write(
 )
 
 st.caption(
-    "Semantic retrieval + Cross-Encoder reranking + "
-    "LLM-based grounded generation"
+    "Semantic Retrieval + Cross-Encoder Reranking + "
+    "LLM-Based Grounded Generation"
 )
 
 
@@ -64,149 +67,26 @@ CHROMA_FOLDER = os.path.join(
 )
 
 
-# ============================================================
-# 4. CHECK DOCUMENT FOLDER
-# ============================================================
+# Create documents folder if it doesn't exist
 
-if not os.path.exists(PDF_FOLDER):
-
-    st.error(
-        "The 'documents' folder was not found."
-    )
-
-    st.info(
-        "Create a folder named 'documents' "
-        "and place your PDF files inside it."
-    )
-
-    st.stop()
-
-
-# ============================================================
-# 5. LOAD PDF DOCUMENTS
-# ============================================================
-
-@st.cache_data
-def load_documents():
-
-    all_documents = []
-
-    pdf_files = sorted(
-        [
-            file
-            for file in os.listdir(PDF_FOLDER)
-            if file.lower().endswith(".pdf")
-        ]
-    )
-
-    if not pdf_files:
-
-        return []
-
-    for filename in pdf_files:
-
-        file_path = os.path.join(
-            PDF_FOLDER,
-            filename
-        )
-
-        try:
-
-            reader = PdfReader(
-                file_path
-            )
-
-            for page_number, page in enumerate(
-                reader.pages
-            ):
-
-                text = page.extract_text()
-
-                if text and text.strip():
-
-                    all_documents.append(
-                        {
-                            "text": text.strip(),
-                            "source": filename,
-                            "page": page_number + 1
-                        }
-                    )
-
-        except Exception as e:
-
-            st.warning(
-                f"Could not process {filename}: {e}"
-            )
-
-    return all_documents
-
-
-# ============================================================
-# LOAD DOCUMENTS
-# ============================================================
-
-all_documents = load_documents()
-
-
-if not all_documents:
-
-    st.error(
-        "No readable PDF documents were found."
-    )
-
-    st.stop()
-
-
-st.success(
-    f"Loaded {len(all_documents)} PDF pages."
+os.makedirs(
+    PDF_FOLDER,
+    exist_ok=True
 )
 
 
 # ============================================================
-# 6. CREATE TEXT CHUNKS
+# 4. TEXT SPLITTER
 # ============================================================
 
-@st.cache_data
-def create_chunks(documents):
-
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=100
-    )
-
-    chunks = []
-
-    for document in documents:
-
-        split_texts = text_splitter.split_text(
-            document["text"]
-        )
-
-        for text in split_texts:
-
-            chunks.append(
-                {
-                    "text": text,
-                    "source": document["source"],
-                    "page": document["page"]
-                }
-            )
-
-    return chunks
-
-
-chunks = create_chunks(
-    all_documents
-)
-
-
-st.info(
-    f"Created {len(chunks)} text chunks."
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=800,
+    chunk_overlap=100
 )
 
 
 # ============================================================
-# 7. LOAD EMBEDDING MODEL
+# 5. LOAD EMBEDDING MODEL
 # ============================================================
 
 @st.cache_resource
@@ -235,7 +115,7 @@ except Exception as e:
 
 
 # ============================================================
-# 8. LOAD RERANKER
+# 6. LOAD CROSS-ENCODER RERANKER
 # ============================================================
 
 @st.cache_resource
@@ -262,11 +142,11 @@ except Exception as e:
 
 
 # ============================================================
-# 9. CREATE / LOAD CHROMADB
+# 7. CREATE / LOAD CHROMADB
 # ============================================================
 
 @st.cache_resource
-def create_collection(chunks):
+def load_chroma():
 
     client = chromadb.PersistentClient(
         path=CHROMA_FOLDER
@@ -278,50 +158,13 @@ def create_collection(chunks):
         )
     )
 
-    if collection.count() == 0:
-
-        chunk_texts = [
-            chunk["text"]
-            for chunk in chunks
-        ]
-
-        embeddings = (
-            embedding_model.encode(
-                chunk_texts,
-                show_progress_bar=False,
-                convert_to_numpy=True
-            )
-        )
-
-        ids = [
-            f"chunk_{i}"
-            for i in range(
-                len(chunks)
-            )
-        ]
-
-        metadatas = [
-            {
-                "source": chunk["source"],
-                "page": chunk["page"]
-            }
-            for chunk in chunks
-        ]
-
-        collection.add(
-            ids=ids,
-            documents=chunk_texts,
-            embeddings=embeddings.tolist(),
-            metadatas=metadatas
-        )
-
-    return collection
+    return client, collection
 
 
 try:
 
-    collection = create_collection(
-        chunks
+    chroma_client, collection = (
+        load_chroma()
     )
 
 except Exception as e:
@@ -335,96 +178,455 @@ except Exception as e:
     st.stop()
 
 
-st.success(
-    f"Vector database ready with "
-    f"{collection.count()} chunks."
-)
-
-
 # ============================================================
-# 10. INITIALIZE GROQ CLIENT
+# 8. PDF PROCESSING FUNCTION
 # ============================================================
 
-try:
-
-    groq_api_key = st.secrets[
-        "GROQ_API_KEY"
-    ]
-
-    groq_client = Groq(
-        api_key=groq_api_key
-    )
-
-except Exception:
-
-    groq_client = None
-
-
-# ============================================================
-# 11. VECTOR RETRIEVAL
-# ============================================================
-
-def retrieve_documents(
-    query,
-    top_k=10
+def process_pdf(
+    pdf_path,
+    source_name
 ):
 
-    query_embedding = (
+    documents = []
+
+    try:
+
+        reader = PdfReader(
+            pdf_path
+        )
+
+        for page_number, page in enumerate(
+            reader.pages
+        ):
+
+            text = page.extract_text()
+
+            if text and text.strip():
+
+                documents.append(
+                    {
+                        "text": text.strip(),
+                        "source": source_name,
+                        "page": page_number + 1
+                    }
+                )
+
+    except Exception as e:
+
+        st.error(
+            f"Error reading {source_name}: {e}"
+        )
+
+        return []
+
+
+    # ========================================================
+    # CREATE CHUNKS
+    # ========================================================
+
+    chunks = []
+
+    for document in documents:
+
+        split_texts = (
+            text_splitter.split_text(
+                document["text"]
+            )
+        )
+
+        for text in split_texts:
+
+            chunks.append(
+                {
+                    "text": text,
+                    "source": document["source"],
+                    "page": document["page"]
+                }
+            )
+
+    return chunks
+
+
+# ============================================================
+# 9. ADD CHUNKS TO CHROMADB
+# ============================================================
+
+def add_chunks_to_database(
+    chunks
+):
+
+    if not chunks:
+
+        return 0
+
+
+    chunk_texts = [
+        chunk["text"]
+        for chunk in chunks
+    ]
+
+
+    # Generate embeddings
+
+    embeddings = (
         embedding_model.encode(
-            query,
+            chunk_texts,
+            show_progress_bar=False,
             convert_to_numpy=True
         )
     )
 
-    results = collection.query(
-        query_embeddings=[
-            query_embedding.tolist()
-        ],
-        n_results=min(
-            top_k,
-            collection.count()
+
+    ids = []
+
+    metadatas = []
+
+
+    for i, chunk in enumerate(
+        chunks
+    ):
+
+        # Create unique ID using content
+
+        content_hash = hashlib.md5(
+            chunk["text"].encode(
+                "utf-8"
+            )
+        ).hexdigest()
+
+
+        chunk_id = (
+            f"{chunk['source']}_"
+            f"{chunk['page']}_"
+            f"{content_hash}_"
+            f"{i}"
         )
+
+
+        ids.append(
+            chunk_id
+        )
+
+
+        metadatas.append(
+            {
+                "source":
+                chunk["source"],
+
+                "page":
+                chunk["page"]
+            }
+        )
+
+
+    # Add to ChromaDB
+
+    collection.add(
+
+        ids=ids,
+
+        documents=chunk_texts,
+
+        embeddings=embeddings.tolist(),
+
+        metadatas=metadatas
+
     )
+
+
+    return len(
+        chunks
+    )
+
+
+# ============================================================
+# 10. LOAD EXISTING PDF DOCUMENTS
+# ============================================================
+
+def load_existing_documents():
+
+    pdf_files = [
+
+        file
+
+        for file in os.listdir(
+            PDF_FOLDER
+        )
+
+        if file.lower().endswith(
+            ".pdf"
+        )
+
+    ]
+
+    return pdf_files
+
+
+# ============================================================
+# 11. SIDEBAR
+# ============================================================
+
+st.sidebar.header(
+    "📄 Document Management"
+)
+
+
+# ============================================================
+# 12. PDF UPLOAD
+# ============================================================
+
+uploaded_file = (
+    st.sidebar.file_uploader(
+
+        "Upload a PDF document",
+
+        type=["pdf"],
+
+        help=(
+            "Upload a technical research "
+            "paper or PDF document."
+        )
+
+    )
+)
+
+
+# ============================================================
+# 13. PROCESS UPLOADED PDF
+# ============================================================
+
+if uploaded_file is not None:
+
+    st.sidebar.write(
+        f"Selected: {uploaded_file.name}"
+    )
+
+
+    if st.sidebar.button(
+        "➕ Add PDF to Knowledge Base"
+    ):
+
+        with st.spinner(
+            "Processing uploaded PDF..."
+        ):
+
+            # Save uploaded file
+
+            uploaded_path = os.path.join(
+
+                PDF_FOLDER,
+
+                uploaded_file.name
+
+            )
+
+
+            with open(
+                uploaded_path,
+                "wb"
+            ) as f:
+
+                f.write(
+                    uploaded_file.getbuffer()
+                )
+
+
+            # Process PDF
+
+            new_chunks = process_pdf(
+
+                uploaded_path,
+
+                uploaded_file.name
+
+            )
+
+
+            if new_chunks:
+
+                try:
+
+                    # Add chunks to ChromaDB
+
+                    added_count = (
+                        add_chunks_to_database(
+                            new_chunks
+                        )
+                    )
+
+
+                    st.sidebar.success(
+
+                        f"Successfully added "
+                        f"{added_count} chunks."
+
+                    )
+
+
+                    st.success(
+
+                        f"📄 {uploaded_file.name} "
+                        f"has been added to the "
+                        f"knowledge base."
+
+                    )
+
+
+                    st.info(
+
+                        "You can now ask questions "
+                        "about this document."
+
+                    )
+
+
+                except Exception as e:
+
+                    st.sidebar.error(
+
+                        "Failed to add document "
+                        "to ChromaDB."
+
+                    )
+
+                    st.exception(
+                        e
+                    )
+
+            else:
+
+                st.sidebar.error(
+
+                    "No readable text was found "
+                    "in this PDF."
+
+                )
+
+
+# ============================================================
+# 14. DISPLAY DATABASE STATUS
+# ============================================================
+
+st.sidebar.divider()
+
+st.sidebar.subheader(
+    "📊 Knowledge Base"
+)
+
+
+st.sidebar.write(
+
+    f"Total chunks: "
+    f"**{collection.count()}**"
+
+)
+
+
+existing_files = (
+    load_existing_documents()
+)
+
+
+st.sidebar.write(
+
+    f"PDF files: "
+    f"**{len(existing_files)}**"
+
+)
+
+
+# ============================================================
+# 15. RETRIEVAL FUNCTION
+# ============================================================
+
+def retrieve_documents(
+
+    query,
+
+    top_k=10
+
+):
+
+    query_embedding = (
+
+        embedding_model.encode(
+
+            query,
+
+            convert_to_numpy=True
+
+        )
+
+    )
+
+
+    results = collection.query(
+
+        query_embeddings=[
+
+            query_embedding.tolist()
+
+        ],
+
+        n_results=min(
+
+            top_k,
+
+            collection.count()
+
+        )
+
+    )
+
 
     return results
 
 
 # ============================================================
-# 12. RERANK RETRIEVED DOCUMENTS
+# 16. RERANKING FUNCTION
 # ============================================================
 
 def rerank_documents(
+
     query,
+
     results,
+
     top_k=3
+
 ):
 
-    if not results:
-
-        return []
-
     documents = results.get(
+
         "documents",
+
         [[]]
+
     )[0]
+
 
     metadatas = results.get(
+
         "metadatas",
+
         [[]]
+
     )[0]
+
 
     if not documents:
 
         return []
 
 
-    # Create query-document pairs
-
     pairs = [
 
         [
+
             query,
+
             document
+
         ]
 
         for document in documents
@@ -432,70 +634,105 @@ def rerank_documents(
     ]
 
 
-    # Get Cross-Encoder scores
+    # Cross-Encoder scores
 
     scores = reranker.predict(
+
         pairs
+
     )
 
 
-    # Combine documents with scores
-
     ranked_results = []
 
+
     for document, metadata, score in zip(
+
         documents,
+
         metadatas,
+
         scores
+
     ):
 
         ranked_results.append(
+
             {
-                "text": document,
-                "source": metadata.get(
+
+                "text":
+                document,
+
+                "source":
+                metadata.get(
+
                     "source",
+
                     "Unknown"
+
                 ),
-                "page": metadata.get(
+
+                "page":
+                metadata.get(
+
                     "page",
+
                     "Unknown"
+
                 ),
-                "score": float(score)
+
+                "score":
+                float(score)
+
             }
+
         )
 
 
-    # Sort by relevance score
+    # Sort by relevance
 
     ranked_results.sort(
-        key=lambda x: x["score"],
+
+        key=lambda x:
+        x["score"],
+
         reverse=True
+
     )
 
 
     return ranked_results[
+
         :top_k
+
     ]
 
 
 # ============================================================
-# 13. BUILD CONTEXT
+# 17. BUILD CONTEXT
 # ============================================================
 
 def build_context(
-    reranked_documents
+
+    documents
+
 ):
 
     context_parts = []
 
+
     for i, document in enumerate(
-        reranked_documents,
+
+        documents,
+
         start=1
+
     ):
 
         context_parts.append(
 
             f"""
+
 [Context {i}]
 
 Source:
@@ -506,29 +743,64 @@ Page:
 
 Content:
 {document["text"]}
+
 """
 
         )
 
+
     return "\n\n".join(
+
         context_parts
+
     )
 
 
 # ============================================================
-# 14. GENERATE ANSWER USING LLM API
+# 18. LOAD GROQ API
+# ============================================================
+
+try:
+
+    groq_api_key = st.secrets[
+
+        "GROQ_API_KEY"
+
+    ]
+
+
+    groq_client = Groq(
+
+        api_key=groq_api_key
+
+    )
+
+
+except Exception:
+
+    groq_client = None
+
+
+# ============================================================
+# 19. GENERATE ANSWER
 # ============================================================
 
 def generate_answer(
+
     question,
+
     context
+
 ):
 
     if groq_client is None:
 
         return (
+
             "Groq API key is not configured. "
-            "Please add GROQ_API_KEY to Streamlit Secrets."
+            "Please add GROQ_API_KEY to "
+            "Streamlit Secrets."
+
         )
 
 
@@ -536,21 +808,22 @@ def generate_answer(
 
 You are a technical document question-answering assistant.
 
-Your task is to answer the user's question using ONLY
-the provided context.
+Answer the user's question ONLY using the provided context.
 
 Rules:
 
 1. Do not use outside knowledge.
-2. Do not invent facts.
-3. If the answer is not available in the context,
-   say exactly:
 
-   "I could not find the answer in the provided documents."
+2. Do not invent facts.
+
+3. If the answer cannot be found in the provided
+context, say:
+
+"I could not find the answer in the provided documents."
 
 4. Give a clear and concise answer.
-5. Use the retrieved context as the source of truth.
-6. When possible, mention the relevant source and page.
+
+5. Mention the relevant source and page when possible.
 
 """
 
@@ -567,7 +840,7 @@ Question:
 {question}
 
 
-Answer the question using only the context above.
+Answer the question using only the provided context.
 
 """
 
@@ -575,28 +848,38 @@ Answer the question using only the context above.
     try:
 
         response = (
-            groq_client.chat.completions.create(
 
-                model=(
-                    "llama-3.1-8b-instant"
-                ),
+            groq_client
+
+            .chat
+
+            .completions
+
+            .create(
+
+                model=
+                "llama-3.1-8b-instant",
 
                 messages=[
 
                     {
+
                         "role":
                         "system",
 
                         "content":
                         system_prompt
+
                     },
 
                     {
+
                         "role":
                         "user",
 
                         "content":
                         user_prompt
+
                     }
 
                 ],
@@ -606,15 +889,22 @@ Answer the question using only the context above.
                 max_tokens=300
 
             )
+
         )
 
 
         answer = (
+
             response
+
             .choices[0]
+
             .message
+
             .content
+
             .strip()
+
         )
 
 
@@ -624,12 +914,14 @@ Answer the question using only the context above.
     except Exception as e:
 
         return (
+
             f"Error generating answer: {e}"
+
         )
 
 
 # ============================================================
-# 15. STREAMLIT USER INTERFACE
+# 20. QUESTION INPUT
 # ============================================================
 
 st.divider()
@@ -640,21 +932,43 @@ question = st.text_input(
     "Ask your question",
 
     placeholder=(
+
         "Example: "
-        "What are the main components of a RAG system?"
+        "What is Retrieval-Augmented Generation?"
+
     )
 
 )
 
 
+# ============================================================
+# 21. ASK QUESTION
+# ============================================================
+
 if st.button(
+
     "🔍 Ask Question"
+
 ):
 
     if not question.strip():
 
         st.warning(
+
             "Please enter a question."
+
+        )
+
+        st.stop()
+
+
+    if collection.count() == 0:
+
+        st.error(
+
+            "The knowledge base is empty. "
+            "Please upload a PDF first."
+
         )
 
         st.stop()
@@ -662,55 +976,92 @@ if st.button(
 
     try:
 
+        # ====================================================
+        # STEP 1: RETRIEVE
+        # ====================================================
+
         with st.spinner(
-            "Retrieving and reranking documents..."
+
+            "Searching the knowledge base..."
+
         ):
 
-            # ----------------------------------------------
-            # STEP 1: VECTOR RETRIEVAL
-            # ----------------------------------------------
-
             retrieved_results = (
+
                 retrieve_documents(
+
                     question,
+
                     top_k=10
+
                 )
-            )
 
-
-            # ----------------------------------------------
-            # STEP 2: RERANKING
-            # ----------------------------------------------
-
-            reranked_documents = (
-                rerank_documents(
-                    question,
-                    retrieved_results,
-                    top_k=3
-                )
-            )
-
-
-            # ----------------------------------------------
-            # STEP 3: BUILD CONTEXT
-            # ----------------------------------------------
-
-            context = build_context(
-                reranked_documents
             )
 
 
         # ====================================================
-        # GENERATE ANSWER
+        # STEP 2: RERANK
         # ====================================================
 
         with st.spinner(
+
+            "Reranking relevant passages..."
+
+        ):
+
+            reranked_documents = (
+
+                rerank_documents(
+
+                    question,
+
+                    retrieved_results,
+
+                    top_k=3
+
+                )
+
+            )
+
+
+        if not reranked_documents:
+
+            st.warning(
+
+                "No relevant documents were found."
+
+            )
+
+            st.stop()
+
+
+        # ====================================================
+        # STEP 3: BUILD CONTEXT
+        # ====================================================
+
+        context = build_context(
+
+            reranked_documents
+
+        )
+
+
+        # ====================================================
+        # STEP 4: GENERATE ANSWER
+        # ====================================================
+
+        with st.spinner(
+
             "Generating grounded answer..."
+
         ):
 
             answer = generate_answer(
+
                 question,
+
                 context
+
             )
 
 
@@ -719,53 +1070,75 @@ if st.button(
         # ====================================================
 
         st.subheader(
+
             "Answer"
+
         )
 
+
         st.write(
+
             answer
+
         )
 
 
         # ====================================================
-        # DISPLAY RETRIEVED CONTEXT
+        # RETRIEVED CONTEXT
         # ====================================================
 
         with st.expander(
+
             "View Retrieved Context"
+
         ):
 
+
             for i, document in enumerate(
+
                 reranked_documents,
+
                 start=1
+
             ):
 
                 st.markdown(
+
                     f"### Retrieved Passage {i}"
+
                 )
 
+
                 st.write(
+
                     document["text"]
+
                 )
+
 
                 st.caption(
 
-                    f"📄 {document['source']} "
-                    f"| Page {document['page']} "
+                    f"📄 "
+                    f"{document['source']} "
+                    f"| Page "
+                    f"{document['page']} "
                     f"| Reranker Score: "
                     f"{document['score']:.4f}"
 
                 )
 
+
                 st.divider()
 
 
         # ====================================================
-        # DISPLAY SOURCES
+        # SOURCES
         # ====================================================
 
         st.subheader(
+
             "Sources"
+
         )
 
 
@@ -773,25 +1146,41 @@ if st.button(
 
 
         for document in (
+
             reranked_documents
+
         ):
 
+
             source = document[
+
                 "source"
+
             ]
 
+
             page = document[
+
                 "page"
+
             ]
 
 
             citation = (
+
                 source,
+
                 page
+
             )
 
 
-            if citation not in shown_sources:
+            if citation not in (
+
+                shown_sources
+
+            ):
+
 
                 st.write(
 
@@ -800,18 +1189,26 @@ if st.button(
 
                 )
 
+
                 shown_sources.add(
+
                     citation
+
                 )
 
 
     except Exception as e:
 
         st.error(
+
             "An error occurred while "
             "processing your question."
+
         )
 
+
         st.exception(
+
             e
+
         )
