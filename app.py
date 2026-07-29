@@ -65,9 +65,6 @@ CHROMA_FOLDER = os.path.join(
     "chroma_db"
 )
 
-
-# Create documents folder if it doesn't exist
-
 os.makedirs(
     PDF_FOLDER,
     exist_ok=True
@@ -98,9 +95,7 @@ def load_embedding_model():
 
 try:
 
-    embedding_model = (
-        load_embedding_model()
-    )
+    embedding_model = load_embedding_model()
 
 except Exception as e:
 
@@ -151,10 +146,8 @@ def load_chroma():
         path=CHROMA_FOLDER
     )
 
-    collection = (
-        client.get_or_create_collection(
-            name="technical_documents"
-        )
+    collection = client.get_or_create_collection(
+        name="technical_documents"
     )
 
     return client, collection
@@ -162,9 +155,7 @@ def load_chroma():
 
 try:
 
-    chroma_client, collection = (
-        load_chroma()
-    )
+    chroma_client, collection = load_chroma()
 
 except Exception as e:
 
@@ -190,217 +181,10 @@ def process_pdf(
 
     try:
 
-        reader = PdfReader(
+        # Open PDF using PyMuPDF
+        pdf_document = fitz.open(
             pdf_path
         )
-
-        for page_number, page in enumerate(
-            reader.pages
-        ):
-
-            text = page.extract_text()
-
-            if text and text.strip():
-
-                documents.append(
-                    {
-                        "text": text.strip(),
-                        "source": source_name,
-                        "page": page_number + 1
-                    }
-                )
-
-    except Exception as e:
-
-        st.error(
-            f"Error reading {source_name}: {e}"
-        )
-
-        return []
-
-
-    # ========================================================
-    # CREATE CHUNKS
-    # ========================================================
-
-    chunks = []
-
-    for document in documents:
-
-        split_texts = (
-            text_splitter.split_text(
-                document["text"]
-            )
-        )
-
-        for text in split_texts:
-
-            chunks.append(
-                {
-                    "text": text,
-                    "source": document["source"],
-                    "page": document["page"]
-                }
-            )
-
-    return chunks
-
-
-# ============================================================
-# 9. ADD CHUNKS TO CHROMADB
-# ============================================================
-
-def add_chunks_to_database(
-    chunks
-):
-
-    if not chunks:
-
-        return 0
-
-
-    chunk_texts = [
-        chunk["text"]
-        for chunk in chunks
-    ]
-
-
-    # Generate embeddings
-
-    embeddings = (
-        embedding_model.encode(
-            chunk_texts,
-            show_progress_bar=False,
-            convert_to_numpy=True
-        )
-    )
-
-
-    ids = []
-
-    metadatas = []
-
-
-    for i, chunk in enumerate(
-        chunks
-    ):
-
-        # Create unique ID using content
-
-        content_hash = hashlib.md5(
-            chunk["text"].encode(
-                "utf-8"
-            )
-        ).hexdigest()
-
-
-        chunk_id = (
-            f"{chunk['source']}_"
-            f"{chunk['page']}_"
-            f"{content_hash}_"
-            f"{i}"
-        )
-
-
-        ids.append(
-            chunk_id
-        )
-
-
-        metadatas.append(
-            {
-                "source":
-                chunk["source"],
-
-                "page":
-                chunk["page"]
-            }
-        )
-
-
-    # Add to ChromaDB
-
-    collection.add(
-
-        ids=ids,
-
-        documents=chunk_texts,
-
-        embeddings=embeddings.tolist(),
-
-        metadatas=metadatas
-
-    )
-
-
-    return len(
-        chunks
-    )
-
-
-# ============================================================
-# 10. LOAD EXISTING PDF DOCUMENTS
-# ============================================================
-
-def load_existing_documents():
-
-    pdf_files = [
-
-        file
-
-        for file in os.listdir(
-            PDF_FOLDER
-        )
-
-        if file.lower().endswith(
-            ".pdf"
-        )
-
-    ]
-
-    return pdf_files
-
-
-# ============================================================
-# 11. SIDEBAR
-# ============================================================
-
-st.sidebar.header(
-    "📄 Document Management"
-)
-
-
-# ============================================================
-# 12. PDF UPLOAD
-# ============================================================
-
-uploaded_file = (
-    st.sidebar.file_uploader(
-
-        "Upload a PDF document",
-
-        type=["pdf"],
-
-        help=(
-            "Upload a technical research "
-            "paper or PDF document."
-        )
-
-    )
-)
-
-
-# ============================================================
-# 13. PROCESS UPLOADED PDF
-# ============================================================
-def process_pdf(pdf_path, source_name):
-
-    documents = []
-
-    try:
-
-        # Open PDF using PyMuPDF
-        pdf_document = fitz.open(pdf_path)
 
         for page_number in range(
             len(pdf_document)
@@ -464,8 +248,291 @@ def process_pdf(pdf_path, source_name):
 
     return chunks
 
+
 # ============================================================
-# 14. DISPLAY DATABASE STATUS
+# 9. ADD CHUNKS TO CHROMADB
+# ============================================================
+
+def add_chunks_to_database(
+    chunks
+):
+
+    if not chunks:
+
+        return 0
+
+
+    chunk_texts = [
+
+        chunk["text"]
+
+        for chunk in chunks
+
+    ]
+
+
+    # Generate embeddings
+
+    embeddings = embedding_model.encode(
+
+        chunk_texts,
+
+        show_progress_bar=False,
+
+        convert_to_numpy=True
+
+    )
+
+
+    ids = []
+
+    metadatas = []
+
+
+    for i, chunk in enumerate(
+        chunks
+    ):
+
+        content_hash = hashlib.md5(
+
+            chunk["text"].encode(
+                "utf-8"
+            )
+
+        ).hexdigest()
+
+
+        # Make unique ID
+
+        chunk_id = (
+
+            f"{chunk['source']}_"
+
+            f"{chunk['page']}_"
+
+            f"{content_hash}_"
+
+            f"{i}"
+
+        )
+
+
+        ids.append(
+            chunk_id
+        )
+
+
+        metadatas.append(
+            {
+                "source":
+                chunk["source"],
+
+                "page":
+                chunk["page"]
+            }
+        )
+
+
+    # Add documents to ChromaDB
+
+    collection.add(
+
+        ids=ids,
+
+        documents=chunk_texts,
+
+        embeddings=embeddings.tolist(),
+
+        metadatas=metadatas
+
+    )
+
+
+    return len(
+        chunks
+    )
+
+
+# ============================================================
+# 10. LOAD EXISTING PDF DOCUMENTS
+# ============================================================
+
+def load_existing_documents():
+
+    return [
+
+        file
+
+        for file in os.listdir(
+            PDF_FOLDER
+        )
+
+        if file.lower().endswith(
+            ".pdf"
+        )
+
+    ]
+
+
+# ============================================================
+# 11. SIDEBAR - DOCUMENT MANAGEMENT
+# ============================================================
+
+st.sidebar.header(
+    "📄 Document Management"
+)
+
+
+# ============================================================
+# 12. PDF UPLOAD
+# ============================================================
+
+uploaded_file = st.sidebar.file_uploader(
+
+    "Upload a PDF document",
+
+    type=["pdf"],
+
+    help=(
+        "Upload a technical research "
+        "paper or PDF document."
+    )
+
+)
+
+
+# ============================================================
+# 13. ADD UPLOADED PDF TO KNOWLEDGE BASE
+# ============================================================
+
+if uploaded_file is not None:
+
+    st.sidebar.write(
+
+        f"Selected: "
+        f"**{uploaded_file.name}**"
+
+    )
+
+
+    if st.sidebar.button(
+
+        "➕ Add PDF to Knowledge Base"
+
+    ):
+
+        with st.spinner(
+
+            "Processing uploaded PDF..."
+
+        ):
+
+            try:
+
+                # ------------------------------------------------
+                # SAVE UPLOADED PDF
+                # ------------------------------------------------
+
+                uploaded_path = os.path.join(
+
+                    PDF_FOLDER,
+
+                    uploaded_file.name
+
+                )
+
+
+                with open(
+
+                    uploaded_path,
+
+                    "wb"
+
+                ) as f:
+
+                    f.write(
+
+                        uploaded_file.getbuffer()
+
+                    )
+
+
+                # ------------------------------------------------
+                # PROCESS PDF
+                # ------------------------------------------------
+
+                new_chunks = process_pdf(
+
+                    uploaded_path,
+
+                    uploaded_file.name
+
+                )
+
+
+                # ------------------------------------------------
+                # CHECK EXTRACTED TEXT
+                # ------------------------------------------------
+
+                if not new_chunks:
+
+                    st.error(
+
+                        "No readable text was found "
+                        "in this PDF. "
+                        "This may be a scanned/image-only "
+                        "PDF and may require OCR."
+
+                    )
+
+                else:
+
+                    # ------------------------------------------------
+                    # ADD TO CHROMADB
+                    # ------------------------------------------------
+
+                    added_count = (
+
+                        add_chunks_to_database(
+
+                            new_chunks
+
+                        )
+
+                    )
+
+
+                    st.success(
+
+                        f"✅ Successfully added "
+                        f"{added_count} chunks from "
+                        f"'{uploaded_file.name}' "
+                        f"to the knowledge base."
+
+                    )
+
+
+                    st.info(
+
+                        "You can now ask questions "
+                        "about this document."
+
+                    )
+
+
+            except Exception as e:
+
+                st.error(
+
+                    "Failed to process the uploaded PDF."
+
+                )
+
+                st.exception(e)
+
+
+# ============================================================
+# 14. KNOWLEDGE BASE STATUS
 # ============================================================
 
 st.sidebar.divider()
@@ -484,7 +551,9 @@ st.sidebar.write(
 
 
 existing_files = (
+
     load_existing_documents()
+
 )
 
 
@@ -507,6 +576,11 @@ def retrieve_documents(
     top_k=10
 
 ):
+
+    if collection.count() == 0:
+
+        return None
+
 
     query_embedding = (
 
@@ -556,6 +630,11 @@ def rerank_documents(
     top_k=3
 
 ):
+
+    if results is None:
+
+        return []
+
 
     documents = results.get(
 
@@ -650,7 +729,7 @@ def rerank_documents(
         )
 
 
-    # Sort by relevance
+    # Sort by reranker score
 
     ranked_results.sort(
 
@@ -693,7 +772,6 @@ def build_context(
         context_parts.append(
 
             f"""
-
 [Context {i}]
 
 Source:
@@ -704,7 +782,6 @@ Page:
 
 Content:
 {document["text"]}
-
 """
 
         )
@@ -778,7 +855,7 @@ Rules:
 2. Do not invent facts.
 
 3. If the answer cannot be found in the provided
-context, say:
+context, say exactly:
 
 "I could not find the answer in the provided documents."
 
@@ -928,7 +1005,7 @@ if st.button(
         st.error(
 
             "The knowledge base is empty. "
-            "Please upload a PDF first."
+            "Please upload and add a PDF first."
 
         )
 
@@ -1112,7 +1189,6 @@ if st.button(
 
         ):
 
-
             source = document[
 
                 "source"
@@ -1142,7 +1218,6 @@ if st.button(
 
             ):
 
-
                 st.write(
 
                     f"📄 {source} "
@@ -1168,8 +1243,4 @@ if st.button(
         )
 
 
-        st.exception(
-
-            e
-
-        )
+        st.exception(e)
