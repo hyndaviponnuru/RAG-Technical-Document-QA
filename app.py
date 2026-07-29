@@ -1,4 +1,7 @@
 import os
+os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+
+import os
 import streamlit as st
 import chromadb
 import torch
