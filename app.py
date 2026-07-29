@@ -3,8 +3,16 @@ import re
 import streamlit as st
 import chromadb
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sentence_transformers import (
+    SentenceTransformer,
+    CrossEncoder
+)
+
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter
+)
+
+from groq import Groq
 
 
 # ============================================================
@@ -22,7 +30,9 @@ st.set_page_config(
 # 2. TITLE
 # ============================================================
 
-st.title("📚 Technical Document QA Assistant")
+st.title(
+    "📚 Technical Document QA Assistant"
+)
 
 st.write(
     "Ask questions about technical research documents "
@@ -30,8 +40,8 @@ st.write(
 )
 
 st.caption(
-    "The system retrieves the most relevant passages "
-    "from your uploaded technical documents."
+    "Semantic retrieval + Cross-Encoder reranking + "
+    "LLM-based grounded generation"
 )
 
 
@@ -131,14 +141,12 @@ def load_documents():
     return all_documents
 
 
-# Load documents
+# ============================================================
+# LOAD DOCUMENTS
+# ============================================================
 
 all_documents = load_documents()
 
-
-# ============================================================
-# 6. CHECK DOCUMENTS
-# ============================================================
 
 if not all_documents:
 
@@ -155,7 +163,7 @@ st.success(
 
 
 # ============================================================
-# 7. CREATE TEXT CHUNKS
+# 6. CREATE TEXT CHUNKS
 # ============================================================
 
 @st.cache_data
@@ -198,7 +206,7 @@ st.info(
 
 
 # ============================================================
-# 8. LOAD SENTENCE TRANSFORMER EMBEDDING MODEL
+# 7. LOAD EMBEDDING MODEL
 # ============================================================
 
 @st.cache_resource
@@ -211,12 +219,41 @@ def load_embedding_model():
 
 try:
 
-    embedding_model = load_embedding_model()
+    embedding_model = (
+        load_embedding_model()
+    )
 
 except Exception as e:
 
     st.error(
         "Failed to load embedding model."
+    )
+
+    st.exception(e)
+
+    st.stop()
+
+
+# ============================================================
+# 8. LOAD RERANKER
+# ============================================================
+
+@st.cache_resource
+def load_reranker():
+
+    return CrossEncoder(
+        "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
+
+
+try:
+
+    reranker = load_reranker()
+
+except Exception as e:
+
+    st.error(
+        "Failed to load reranking model."
     )
 
     st.exception(e)
@@ -231,17 +268,15 @@ except Exception as e:
 @st.cache_resource
 def create_collection(chunks):
 
-    # Persistent ChromaDB
-
     client = chromadb.PersistentClient(
         path=CHROMA_FOLDER
     )
 
-    collection = client.get_or_create_collection(
-        name="technical_documents"
+    collection = (
+        client.get_or_create_collection(
+            name="technical_documents"
+        )
     )
-
-    # Add data only if collection is empty
 
     if collection.count() == 0:
 
@@ -250,22 +285,20 @@ def create_collection(chunks):
             for chunk in chunks
         ]
 
-        # Generate embeddings
-
-        embeddings = embedding_model.encode(
-            chunk_texts,
-            show_progress_bar=False,
-            convert_to_numpy=True
+        embeddings = (
+            embedding_model.encode(
+                chunk_texts,
+                show_progress_bar=False,
+                convert_to_numpy=True
+            )
         )
-
-        # IDs
 
         ids = [
             f"chunk_{i}"
-            for i in range(len(chunks))
+            for i in range(
+                len(chunks)
+            )
         ]
-
-        # Metadata
 
         metadatas = [
             {
@@ -274,8 +307,6 @@ def create_collection(chunks):
             }
             for chunk in chunks
         ]
-
-        # Store in ChromaDB
 
         collection.add(
             ids=ids,
@@ -311,22 +342,39 @@ st.success(
 
 
 # ============================================================
-# 10. RETRIEVE RELEVANT DOCUMENTS
+# 10. INITIALIZE GROQ CLIENT
+# ============================================================
+
+try:
+
+    groq_api_key = st.secrets[
+        "GROQ_API_KEY"
+    ]
+
+    groq_client = Groq(
+        api_key=groq_api_key
+    )
+
+except Exception:
+
+    groq_client = None
+
+
+# ============================================================
+# 11. VECTOR RETRIEVAL
 # ============================================================
 
 def retrieve_documents(
     query,
-    top_k=3
+    top_k=10
 ):
 
-    # Convert query to embedding
-
-    query_embedding = embedding_model.encode(
-        query,
-        convert_to_numpy=True
+    query_embedding = (
+        embedding_model.encode(
+            query,
+            convert_to_numpy=True
+        )
     )
-
-    # Search ChromaDB
 
     results = collection.query(
         query_embeddings=[
@@ -342,190 +390,246 @@ def retrieve_documents(
 
 
 # ============================================================
-# 11. SIMPLE EXTRACTIVE ANSWER GENERATION
+# 12. RERANK RETRIEVED DOCUMENTS
+# ============================================================
+
+def rerank_documents(
+    query,
+    results,
+    top_k=3
+):
+
+    if not results:
+
+        return []
+
+    documents = results.get(
+        "documents",
+        [[]]
+    )[0]
+
+    metadatas = results.get(
+        "metadatas",
+        [[]]
+    )[0]
+
+    if not documents:
+
+        return []
+
+
+    # Create query-document pairs
+
+    pairs = [
+
+        [
+            query,
+            document
+        ]
+
+        for document in documents
+
+    ]
+
+
+    # Get Cross-Encoder scores
+
+    scores = reranker.predict(
+        pairs
+    )
+
+
+    # Combine documents with scores
+
+    ranked_results = []
+
+    for document, metadata, score in zip(
+        documents,
+        metadatas,
+        scores
+    ):
+
+        ranked_results.append(
+            {
+                "text": document,
+                "source": metadata.get(
+                    "source",
+                    "Unknown"
+                ),
+                "page": metadata.get(
+                    "page",
+                    "Unknown"
+                ),
+                "score": float(score)
+            }
+        )
+
+
+    # Sort by relevance score
+
+    ranked_results.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+
+    return ranked_results[
+        :top_k
+    ]
+
+
+# ============================================================
+# 13. BUILD CONTEXT
+# ============================================================
+
+def build_context(
+    reranked_documents
+):
+
+    context_parts = []
+
+    for i, document in enumerate(
+        reranked_documents,
+        start=1
+    ):
+
+        context_parts.append(
+
+            f"""
+[Context {i}]
+
+Source:
+{document["source"]}
+
+Page:
+{document["page"]}
+
+Content:
+{document["text"]}
+"""
+
+        )
+
+    return "\n\n".join(
+        context_parts
+    )
+
+
+# ============================================================
+# 14. GENERATE ANSWER USING LLM API
 # ============================================================
 
 def generate_answer(
     question,
-    retrieved_documents
+    context
 ):
 
-    if (
-        not retrieved_documents
-        or "documents" not in retrieved_documents
-    ):
+    if groq_client is None:
 
         return (
-            "I could not find the answer "
-            "in the provided documents."
+            "Groq API key is not configured. "
+            "Please add GROQ_API_KEY to Streamlit Secrets."
         )
 
 
-    documents = retrieved_documents[
-        "documents"
-    ][0]
+    system_prompt = """
+
+You are a technical document question-answering assistant.
+
+Your task is to answer the user's question using ONLY
+the provided context.
+
+Rules:
+
+1. Do not use outside knowledge.
+2. Do not invent facts.
+3. If the answer is not available in the context,
+   say exactly:
+
+   "I could not find the answer in the provided documents."
+
+4. Give a clear and concise answer.
+5. Use the retrieved context as the source of truth.
+6. When possible, mention the relevant source and page.
+
+"""
 
 
-    if not documents:
+    user_prompt = f"""
+
+Context:
+
+{context}
+
+
+Question:
+
+{question}
+
+
+Answer the question using only the context above.
+
+"""
+
+
+    try:
+
+        response = (
+            groq_client.chat.completions.create(
+
+                model=(
+                    "llama-3.1-8b-instant"
+                ),
+
+                messages=[
+
+                    {
+                        "role":
+                        "system",
+
+                        "content":
+                        system_prompt
+                    },
+
+                    {
+                        "role":
+                        "user",
+
+                        "content":
+                        user_prompt
+                    }
+
+                ],
+
+                temperature=0.1,
+
+                max_tokens=300
+
+            )
+        )
+
+
+        answer = (
+            response
+            .choices[0]
+            .message
+            .content
+            .strip()
+        )
+
+
+        return answer
+
+
+    except Exception as e:
 
         return (
-            "I could not find the answer "
-            "in the provided documents."
+            f"Error generating answer: {e}"
         )
-
-
-    # --------------------------------------------------------
-    # Extract important keywords from question
-    # --------------------------------------------------------
-
-    question_words = set(
-
-        re.findall(
-
-            r"\b[a-zA-Z]{3,}\b",
-
-            question.lower()
-
-        )
-
-    )
-
-
-    scored_sentences = []
-
-
-    # --------------------------------------------------------
-    # Score sentences based on keyword overlap
-    # --------------------------------------------------------
-
-    for document in documents:
-
-        sentences = re.split(
-
-            r"(?<=[.!?])\s+",
-
-            document
-
-        )
-
-
-        for sentence in sentences:
-
-            sentence = sentence.strip()
-
-
-            if not sentence:
-
-                continue
-
-
-            sentence_words = set(
-
-                re.findall(
-
-                    r"\b[a-zA-Z]{3,}\b",
-
-                    sentence.lower()
-
-                )
-
-            )
-
-
-            overlap = (
-
-                question_words
-
-                & sentence_words
-
-            )
-
-
-            score = len(overlap)
-
-
-            if score > 0:
-
-                scored_sentences.append(
-
-                    (
-                        score,
-
-                        sentence
-
-                    )
-
-                )
-
-
-    # --------------------------------------------------------
-    # If no matching sentence
-    # --------------------------------------------------------
-
-    if not scored_sentences:
-
-        return (
-
-            "I could not find a direct answer "
-            "in the retrieved document passages."
-        )
-
-
-    # --------------------------------------------------------
-    # Sort by relevance
-    # --------------------------------------------------------
-
-    scored_sentences.sort(
-
-        key=lambda x: x[0],
-
-        reverse=True
-
-    )
-
-
-    # --------------------------------------------------------
-    # Select top sentences
-    # --------------------------------------------------------
-
-    selected_sentences = []
-
-    seen = set()
-
-
-    for score, sentence in scored_sentences:
-
-        normalized = sentence.lower()
-
-
-        if normalized not in seen:
-
-            selected_sentences.append(
-                sentence
-            )
-
-            seen.add(
-                normalized
-            )
-
-
-        if len(
-            selected_sentences
-        ) >= 4:
-
-            break
-
-
-    answer = " ".join(
-        selected_sentences
-    )
-
-
-    return answer
 
 
 # ============================================================
-# 12. STREAMLIT USER INTERFACE
+# 15. STREAMLIT USER INTERFACE
 # ============================================================
 
 st.divider()
@@ -537,7 +641,7 @@ question = st.text_input(
 
     placeholder=(
         "Example: "
-        "What is Retrieval-Augmented Generation?"
+        "What are the main components of a RAG system?"
     )
 
 )
@@ -559,28 +663,54 @@ if st.button(
     try:
 
         with st.spinner(
-            "Searching technical documents..."
+            "Retrieving and reranking documents..."
         ):
 
-            # Retrieve relevant chunks
+            # ----------------------------------------------
+            # STEP 1: VECTOR RETRIEVAL
+            # ----------------------------------------------
 
-            results = retrieve_documents(
-
-                question,
-
-                top_k=3
-
+            retrieved_results = (
+                retrieve_documents(
+                    question,
+                    top_k=10
+                )
             )
 
 
-            # Generate answer from retrieved context
+            # ----------------------------------------------
+            # STEP 2: RERANKING
+            # ----------------------------------------------
+
+            reranked_documents = (
+                rerank_documents(
+                    question,
+                    retrieved_results,
+                    top_k=3
+                )
+            )
+
+
+            # ----------------------------------------------
+            # STEP 3: BUILD CONTEXT
+            # ----------------------------------------------
+
+            context = build_context(
+                reranked_documents
+            )
+
+
+        # ====================================================
+        # GENERATE ANSWER
+        # ====================================================
+
+        with st.spinner(
+            "Generating grounded answer..."
+        ):
 
             answer = generate_answer(
-
                 question,
-
-                results
-
+                context
             )
 
 
@@ -605,29 +735,29 @@ if st.button(
             "View Retrieved Context"
         ):
 
-            if results.get(
-                "documents"
+            for i, document in enumerate(
+                reranked_documents,
+                start=1
             ):
 
-                for i, document in enumerate(
+                st.markdown(
+                    f"### Retrieved Passage {i}"
+                )
 
-                    results["documents"][0],
+                st.write(
+                    document["text"]
+                )
 
-                    start=1
+                st.caption(
 
-                ):
+                    f"📄 {document['source']} "
+                    f"| Page {document['page']} "
+                    f"| Reranker Score: "
+                    f"{document['score']:.4f}"
 
-                    st.markdown(
+                )
 
-                        f"**Retrieved Passage {i}**"
-
-                    )
-
-                    st.write(
-                        document
-                    )
-
-                    st.divider()
+                st.divider()
 
 
         # ====================================================
@@ -642,49 +772,37 @@ if st.button(
         shown_sources = set()
 
 
-        if (
-
-            results.get(
-                "metadatas"
-            )
-
-            and results["metadatas"][0]
-
+        for document in (
+            reranked_documents
         ):
 
-            for metadata in (
+            source = document[
+                "source"
+            ]
 
-                results["metadatas"][0]
+            page = document[
+                "page"
+            ]
 
-            ):
 
-                source = metadata.get(
-                    "source",
-                    "Unknown"
+            citation = (
+                source,
+                page
+            )
+
+
+            if citation not in shown_sources:
+
+                st.write(
+
+                    f"📄 {source} "
+                    f"| Page {page}"
+
                 )
 
-                page = metadata.get(
-                    "page",
-                    "Unknown"
+                shown_sources.add(
+                    citation
                 )
-
-
-                citation = (
-                    source,
-                    page
-                )
-
-
-                if citation not in shown_sources:
-
-                    st.write(
-                        f"📄 {source} "
-                        f"| Page {page}"
-                    )
-
-                    shown_sources.add(
-                        citation
-                    )
 
 
     except Exception as e:
