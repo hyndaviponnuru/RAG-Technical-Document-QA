@@ -107,10 +107,19 @@ if "chunks_count" not in st.session_state:
 if "processed_files_hash" not in st.session_state:
     st.session_state.processed_files_hash = None
 
-if "chroma_client" not in st.session_state:
+@st.cache_resource
+def get_chroma_client():
     # Ephemeral (in-memory) client: no disk persistence, so there's
     # nothing to go stale between sessions and nothing to clean up.
-    st.session_state.chroma_client = chromadb.EphemeralClient()
+    # Cached with st.cache_resource so it's constructed exactly once
+    # per app process — calling EphemeralClient() repeatedly across
+    # Streamlit reruns is what triggers Chroma's internal
+    # SharedSystemClient KeyError.
+    return chromadb.EphemeralClient()
+
+
+if "chroma_client" not in st.session_state:
+    st.session_state.chroma_client = get_chroma_client()
 
 
 # ============================================================
