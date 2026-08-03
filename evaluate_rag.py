@@ -4,7 +4,8 @@ test_questions = [
         "expected_keywords": [
             "retrieval",
             "generation",
-            "knowledge"
+            "knowledge",
+            "documents"
         ]
     },
     {
@@ -12,7 +13,8 @@ test_questions = [
         "expected_keywords": [
             "embedding",
             "vector",
-            "semantic"
+            "semantic",
+            "similarity"
         ]
     },
     {
@@ -20,13 +22,24 @@ test_questions = [
         "expected_keywords": [
             "sentence",
             "embedding",
-            "semantic"
+            "semantic",
+            "transformer"
+        ]
+    },
+    {
+        "question": "What is the purpose of Cross-Encoder reranking?",
+        "expected_keywords": [
+            "reranking",
+            "relevance",
+            "score",
+            "documents"
         ]
     },
     {
         "question": "What is LoRA?",
         "expected_keywords": [
             "low-rank",
+            "adaptation",
             "fine-tuning"
         ]
     }
